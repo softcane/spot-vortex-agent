@@ -22,8 +22,6 @@ SpotVortex operates as a control plane within your cluster, consisting of severa
 - **Guardian**: Enforces safety policies and PDBs to ensure cluster stability.
 - **Collector**: Gathers local cluster metrics without exposing PDB.
 
-For a deeper technical dive into the runtime architecture and model integration, please see [AGENT_RUNTIME_TECHNICAL.md](docs_internal/AGENT_RUNTIME_TECHNICAL.md).
-
 ## Installation
 
 ### Prerequisites

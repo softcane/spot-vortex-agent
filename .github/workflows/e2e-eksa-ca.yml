@@ -48,9 +48,11 @@ jobs:
 
           if ! command -v eksctl >/dev/null 2>&1; then
             # Pin eksctl to v0.204.0
+            mkdir -p /tmp/eksctl_dl
             curl --silent --location "https://github.com/eksctl-io/eksctl/releases/download/v0.204.0/eksctl_Linux_amd64.tar.gz" \
-              | tar xz -C /tmp
-            sudo mv /tmp/eksctl /usr/local/bin/eksctl
+              | tar xz -C /tmp/eksctl_dl
+            sudo mv /tmp/eksctl_dl/eksctl /usr/local/bin/eksctl
+            rm -rf /tmp/eksctl_dl
           fi
 
           if ! command -v clusterctl >/dev/null 2>&1; then
@@ -62,9 +64,11 @@ jobs:
 
           if ! command -v eksctl-anywhere >/dev/null 2>&1; then
             # Pin eksctl-anywhere to v0.22.1 (GitHub Release)
-            curl -fsSL "https://github.com/aws/eks-anywhere/releases/download/v0.22.1/eksctl-anywhere-v0.22.1-linux-amd64.tar.gz" -o /tmp/eksctl-anywhere.tar.gz
-            tar -xzf /tmp/eksctl-anywhere.tar.gz -C /tmp
-            sudo mv /tmp/eksctl-anywhere /usr/local/bin/eksctl-anywhere
+            mkdir -p /tmp/eksa_dl
+            curl -fsSL "https://github.com/aws/eks-anywhere/releases/download/v0.22.1/eksctl-anywhere-v0.22.1-linux-amd64.tar.gz" -o /tmp/eksa_dl/archive.tar.gz
+            tar -xzf /tmp/eksa_dl/archive.tar.gz -C /tmp/eksa_dl
+            sudo mv /tmp/eksa_dl/eksctl-anywhere /usr/local/bin/eksctl-anywhere
+            rm -rf /tmp/eksa_dl
           fi
 
           kind version
