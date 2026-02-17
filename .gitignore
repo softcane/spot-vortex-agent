@@ -66,6 +66,8 @@ kubeconfig
 *.kubeconfig
 
 # doc
-docs_internal.venv/
+docs_internal
+
 __pycache__/
 *.pyc
+tests/e2e/.venv/
