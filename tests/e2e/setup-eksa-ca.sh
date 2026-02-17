@@ -38,11 +38,15 @@ patch_workload_cluster_config() {
   MGMT_CLUSTER_NAME="$MGMT_CLUSTER_NAME" yq -i \
     'select(.kind == "Cluster").spec.managementCluster.name = env(MGMT_CLUSTER_NAME)' \
     "$workload_cfg"
+}
 
-  # Docker provider + externalized package install path needs CNI disabled in this flow.
+set_cluster_cni_kindnetd() {
+  local cluster_cfg="$1"
+
+  # Use kindnetd for local Docker runs to avoid Cilium bootstrap deadlocks on constrained hosts.
   yq -i \
-    'select(.kind == "DockerDatacenterConfig").spec.clusterNetwork.cniConfig.kind = "none"' \
-    "$workload_cfg"
+    'select(.kind == "Cluster").spec.clusterNetwork.cniConfig = {"kindnetd": {}}' \
+    "$cluster_cfg"
 }
 
 derive_eksa_release() {
@@ -176,6 +180,7 @@ main() {
 
   if [[ ! -f "$mgmt_kubeconfig" ]]; then
     generate_cluster_config "$MGMT_CLUSTER_NAME" "$mgmt_cfg"
+    set_cluster_cni_kindnetd "$mgmt_cfg"
     log "Creating management cluster: $MGMT_CLUSTER_NAME"
     eksctl anywhere create cluster -f "$mgmt_cfg"
   else
@@ -185,6 +190,7 @@ main() {
   if [[ ! -f "$workload_kubeconfig" ]]; then
     generate_cluster_config "$WORKLOAD_CLUSTER_NAME" "$workload_cfg"
     patch_workload_cluster_config "$workload_cfg"
+    set_cluster_cni_kindnetd "$workload_cfg"
     log "Creating workload cluster: $WORKLOAD_CLUSTER_NAME"
     KUBECONFIG="$mgmt_kubeconfig" eksctl anywhere create cluster -f "$workload_cfg"
   else
