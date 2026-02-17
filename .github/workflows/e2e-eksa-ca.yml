@@ -53,9 +53,8 @@ jobs:
           fi
 
           if ! command -v clusterctl >/dev/null 2>&1; then
-            CLUSTERCTL_URL="$(curl -fsSL https://api.github.com/repos/kubernetes-sigs/cluster-api/releases/latest \
-              | jq -r '.assets[] | select(.name == "clusterctl-linux-amd64") | .browser_download_url')"
-            curl -fsSL "$CLUSTERCTL_URL" -o /tmp/clusterctl
+            # Pin to v1.9.5 to avoid GitHub API rate limits (403)
+            curl -fsSL https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.9.5/clusterctl-linux-amd64 -o /tmp/clusterctl
             chmod +x /tmp/clusterctl
             sudo mv /tmp/clusterctl /usr/local/bin/clusterctl
           fi

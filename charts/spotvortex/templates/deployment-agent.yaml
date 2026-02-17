@@ -31,11 +31,13 @@ spec:
             - --dry-run=false
             {{- end }}
           env:
+            {{- if .Values.apiKey }}
             - name: SPOTVORTEX_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "spotvortex.fullname" . }}-api-key
                   key: api-key
+            {{- end }}
             - name: SPOTVORTEX_CLOUD
               value: {{ .Values.cloud | quote }}
           resources:

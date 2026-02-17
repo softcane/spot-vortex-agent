@@ -16,7 +16,7 @@ ML training/data pipelines are out of scope.
 
 ```bash
 go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
-helm template spotvortex charts/spotvortex --set apiKey=dummy >/tmp/spotvortex_chart.yaml
+helm template spotvortex charts/spotvortex >/tmp/spotvortex_chart.yaml
 docker build -t spotvortex-agent:local .
 ```
 

@@ -35,14 +35,13 @@ For a deeper technical dive into the runtime architecture and model integration,
 
 ```bash
 helm upgrade --install spotvortex oci://ghcr.io/softcane/charts/spotvortex \
-  --namespace spotvortex --create-namespace \
-  --set apiKey=<API_KEY>
+  --namespace spotvortex --create-namespace
 ```
 
 ### Install via Script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/softcane/spot-vortex-agent/main/hack/install.sh | SPOTVORTEX_API_KEY=<API_KEY> bash
+curl -fsSL https://raw.githubusercontent.com/softcane/spot-vortex-agent/main/hack/install.sh | bash
 ```
 
 ## Model Contract
@@ -70,7 +69,7 @@ If you want to contribute or run the agent locally for development:
 ```bash
 go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
 helm lint charts/spotvortex
-helm template spotvortex charts/spotvortex --set apiKey=dummy >/tmp/spotvortex_chart.yaml
+helm template spotvortex charts/spotvortex >/tmp/spotvortex_chart.yaml
 docker build -t spotvortex-agent:local .
 ```
 

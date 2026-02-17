@@ -1,5 +1,7 @@
 # SpotVortex Helm values
 
+# Optional API key. Leave empty for free/local usage.
+apiKey: ""
 
 # Cloud this deployment targets.
 cloud: aws
