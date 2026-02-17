@@ -1,0 +1,269 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    scrape_configs:
+      - job_name: spotvortex-agent
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - spotvortex-agent-metrics.monitoring.svc.cluster.local:8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spotvortex-alert-rules
+  namespace: monitoring
+data:
+  spotvortex-readiness.yaml: |
+    groups:
+      - name: spotvortex-readiness
+        rules:
+          - alert: SpotVortexHighRiskScore
+            expr: max_over_time(spotvortex_risk_score[10m]) > 0.90
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "SpotVortex risk score sustained above 0.90"
+              description: "A managed pool has remained in high-risk state for more than 10 minutes."
+
+          - alert: SpotVortexRuntimeRiskHigh
+            expr: max_over_time(spotvortex_runtime_score[10m]) > 0.90
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "SpotVortex runtime risk sustained above 0.90"
+              description: "Runtime interruption risk has remained elevated for at least 10 minutes."
+
+          - alert: SpotVortexHighDrainPressure
+            expr: (spotvortex_nodes_draining / clamp_min(spotvortex_nodes_managed, 1)) > 0.25
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "SpotVortex drain pressure exceeded 25%"
+              description: "Too many nodes are draining concurrently relative to managed nodes."
+
+          - alert: SpotVortexReconcileLatencyP95High
+            expr: histogram_quantile(0.95, sum by (le) (rate(spotvortex_reconcile_loop_duration_seconds_bucket[15m]))) > 5
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "SpotVortex reconcile p95 latency above 5s"
+              description: "Reconcile loop p95 latency stayed above 5 seconds for at least 15 minutes."
+
+          - alert: SpotVortexNoActionsObserved
+            expr: sum(rate(spotvortex_action_taken_total[30m])) == 0
+            for: 30m
+            labels:
+              severity: info
+            annotations:
+              summary: "No SpotVortex actions observed in 30 minutes"
+              description: "Controller may be idle, blocked by guardrails, or unhealthy."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.52.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --web.enable-lifecycle
+          ports:
+            - name: web
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: web
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: web
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: rules
+              mountPath: /etc/prometheus/rules
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: spotvortex-alert-rules
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: web
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-providers
+  namespace: monitoring
+data:
+  providers.yaml: |
+    apiVersion: 1
+    providers:
+      - name: spotvortex
+        orgId: 1
+        folder: SpotVortex
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        updateIntervalSeconds: 15
+        options:
+          path: /var/lib/grafana/dashboards/spotvortex
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.8
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards/spotvortex
+              readOnly: true
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: dashboards
+          configMap:
+            name: spotvortex-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30000

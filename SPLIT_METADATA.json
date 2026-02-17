@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-02-17T10:08:41Z",
+  "source_repo": "spot-vortex (private monorepo)",
+  "target_repo": "spot-vortex-agent",
+  "track": "B1",
+  "history_preserving": false,
+  "included_paths": [
+    "go.mod",
+    "go.sum",
+    "Makefile",
+    "Dockerfile",
+    ".dockerignore",
+    "cmd/",
+    "internal/",
+    "charts/",
+    "tests/e2e/",
+    "config/default.yaml",
+    "config/kind.yaml",
+    "config/runtime.json",
+    "config/workload_distributions.yaml",
+    "dashboards/spotvortex-dryrun.json"
+  ]
+}

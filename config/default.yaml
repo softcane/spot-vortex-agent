@@ -1,0 +1,71 @@
+# SpotVortex Configuration
+# All values are required - no hardcoded defaults
+
+controller:
+  # Risk threshold for triggering drain (0.0 - 1.0)
+  # Nodes with interruption probability above this are drained
+  riskThreshold: 0.85
+
+  # Maximum percentage of cluster to drain simultaneously (0.0 - 1.0)
+  # Thundering herd protection per mission_guardrail.md
+  maxDrainRatio: 0.10
+
+  # Seconds between reconciliation cycles
+  reconcileIntervalSeconds: 30
+
+  # Minimum model confidence required to take action (0.0 - 1.0)
+  # If below this, fall back to On-Demand (Prime Directive)
+  confidenceThreshold: 0.50
+
+  # Grace period for pod eviction in seconds
+  drainGracePeriodSeconds: 60
+
+inference:
+  # Paths to ONNX model files (required for live operation)
+  tftModelPath: "models/tft.onnx"
+  rlModelPath: "models/rl_policy.onnx"
+  modelManifestPath: "models/MODEL_MANIFEST.json"
+  expectedCloud: "aws"
+
+prometheus:
+  # Prometheus server URL (required)
+  url: "http://prometheus:9090"
+
+  # Scrape timeout in seconds
+  timeoutSeconds: 10
+
+aws:
+  # AWS region for spot price scraping
+  region: "us-east-1"
+
+  # Instance types to monitor
+  instanceTypes:
+    - "m5.large"
+    - "m5.xlarge"
+    - "m5.2xlarge"
+    - "c5.large"
+    - "c5.xlarge"
+    - "c5.2xlarge"
+    - "r5.large"
+    - "r5.xlarge"
+
+  # Availability zones to monitor
+  availabilityZones:
+    - "us-east-1a"
+    - "us-east-1b"
+    - "us-east-1c"
+    - "us-east-1d"
+
+gcp:
+  # GCP project ID (required for GCP support)
+  projectId: ""
+
+  # GCP region for preemptible pricing
+  region: "us-central1"
+
+  # Machine types to monitor
+  machineTypes:
+    - "n1-standard-2"
+    - "n1-standard-4"
+    - "n2-standard-2"
+    - "n2-standard-4"

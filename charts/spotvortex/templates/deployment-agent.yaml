@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spotvortex.fullname" . }}-agent
+  labels:
+    {{- include "spotvortex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  selector:
+    matchLabels:
+      {{- include "spotvortex.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "spotvortex.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: {{ include "spotvortex.serviceAccountName" . }}
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          args:
+            - run
+            - --config=/etc/spotvortex/config.yaml
+            {{- if .Values.mode.dryRun }}
+            - --dry-run
+            {{- end }}
+          env:
+            - name: SPOTVORTEX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spotvortex.fullname" . }}-api-key
+                  key: api-key
+            - name: SPOTVORTEX_CLOUD
+              value: {{ .Values.cloud | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/spotvortex
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "spotvortex.fullname" . }}-config
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

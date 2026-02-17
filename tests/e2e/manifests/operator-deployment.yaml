@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spotvortex-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spotvortex-agent
+  namespace: spotvortex-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spotvortex-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spotvortex-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spotvortex-agent
+subjects:
+  - kind: ServiceAccount
+    name: spotvortex-agent
+    namespace: spotvortex-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spotvortex-config
+  namespace: spotvortex-system
+data:
+  config.yaml: |
+    # SpotVortex Agent Configuration
+    mode: controller
+    dryRun: false
+    reconcileInterval: 30s
+    
+    models:
+      tftPath: /models/tft.onnx
+      rlPath: /models/rl_policy.onnx
+    
+    guardrails:
+      maxClusterChurn: 0.20
+      confidenceThreshold: 0.50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spotvortex-agent
+  namespace: spotvortex-system
+  labels:
+    app: spotvortex-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spotvortex-agent
+  template:
+    metadata:
+      labels:
+        app: spotvortex-agent
+    spec:
+      serviceAccountName: spotvortex-agent
+      containers:
+        - name: agent
+          image: spotvortex-agent:e2e-test
+          imagePullPolicy: Never  # Use local image from Kind
+          args:
+            - run
+            - --config=/etc/spotvortex/config.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/spotvortex
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: spotvortex-config

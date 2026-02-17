@@ -1,0 +1,370 @@
+# =============================================================================
+# SpotVortex Workload Distribution Configuration
+# =============================================================================
+# This file defines STATISTICALLY REALISTIC distributions for workload profiles.
+# Instead of uniform random sampling, we use distributions based on industry
+# benchmarks and Kubernetes telemetry patterns.
+#
+# Distribution Types:
+#   - lognormal: For startup times (positive, right-skewed)
+#   - uniform: For bounded ranges
+#   - exponential: For penalty hours (heavy tail for rare disasters)
+#   - constant: For fixed values
+#
+# To modify behavior:
+#   - Increase 'sigma' for more variance
+#   - Increase 'mu' for longer startup times
+#   - Increase 'scale' for heavier tails
+# =============================================================================
+
+
+workloads:
+
+  # ---------------------------------------------------------------------------
+  # STATELESS WEB (Nginx, Envoy, HAProxy)
+  # Very fast startup, minimal penalty
+  # ---------------------------------------------------------------------------
+  stateless_web:
+    # Priority drives guardrails and spot exposure caps.
+    priority: P3
+
+    # Startup: 5-15 seconds typically, lognormal with mean ~7s
+    # mu = ln(7) ≈ 1.95, sigma controls spread
+    pod_startup_time:
+      distribution: lognormal
+      mu: 2.05
+      sigma: 0.4
+    
+    # Web proxies are typically replicated, low penalty
+    outage_penalty_hours:
+      distribution: constant
+      value: 0.5
+    
+    # Easy to migrate (stateless)
+    migration_cost_multiplier: 0.1
+    
+    # How common is this workload type (weights sum to 1.0)
+    weight: 0.20
+
+
+  # ---------------------------------------------------------------------------
+  # STATELESS JAVA (Spring Boot, Micronaut)
+  # Slow startup due to JVM warmup, moderate penalty
+  # ---------------------------------------------------------------------------
+  stateless_java:
+    priority: P2
+
+    # Startup: 45-90 seconds typically (JVM classloading, Spring context)
+    # mu = ln(55) ≈ 4.0
+    pod_startup_time:
+      distribution: lognormal
+      mu: 3.95
+      sigma: 0.3
+    
+    # Business logic services have SLA implications
+    outage_penalty_hours:
+      distribution: uniform
+      low: 0.8
+      high: 3.0
+    
+    migration_cost_multiplier: 0.5
+    weight: 0.17
+
+
+  # ---------------------------------------------------------------------------
+  # STATELESS APP (Go, Python, Node.js)
+  # Fast startup, moderate penalty
+  # ---------------------------------------------------------------------------
+  stateless_app:
+    priority: P2
+
+    # Startup: 10-30 seconds typically
+    # mu = ln(18) ≈ 2.9
+    pod_startup_time:
+      distribution: lognormal
+      mu: 2.85
+      sigma: 0.35
+    
+    outage_penalty_hours:
+      distribution: uniform
+      low: 0.5
+      high: 1.8
+    
+    migration_cost_multiplier: 0.2
+    weight: 0.20
+
+
+  # ---------------------------------------------------------------------------
+  # DATABASE (PostgreSQL, MySQL, MongoDB)
+  # Slow startup, VERY HIGH penalty (data loss, recovery)
+  # ---------------------------------------------------------------------------
+  database:
+    priority: P0
+
+    # Startup: 120-300 seconds (WAL recovery, cache warmup)
+    # mu = ln(180) ≈ 5.2
+    pod_startup_time:
+      distribution: lognormal
+      mu: 5.15
+      sigma: 0.35
+    
+    # Heavy tail: most outages are 10-30h, but data loss can be 100h+
+    outage_penalty_hours:
+      distribution: lognormal
+      mu: 2.6
+      sigma: 0.5
+    
+    # Very expensive to migrate (connection draining, replication lag)
+    migration_cost_multiplier: 3.5
+    weight: 0.06
+
+
+  # ---------------------------------------------------------------------------
+  # MESSAGE QUEUE (Kafka, RabbitMQ, Pulsar)
+  # Very slow startup, high penalty
+  # ---------------------------------------------------------------------------
+  message_queue:
+    priority: P1
+
+    # Startup: 180-400 seconds (partition rebalancing, consumer groups)
+    # mu = ln(280) ≈ 5.6
+    pod_startup_time:
+      distribution: lognormal
+      mu: 5.45
+      sigma: 0.3
+    
+    # Message loss can cascade through entire system
+    outage_penalty_hours:
+      distribution: uniform
+      low: 6.0
+      high: 16.0
+    
+    migration_cost_multiplier: 3.0
+    weight: 0.04
+
+
+  # ---------------------------------------------------------------------------
+  # GPU WORKER (AI Inference, ML Training)
+  # Moderate startup (model loading), high penalty
+  # ---------------------------------------------------------------------------
+  gpu_worker:
+    priority: P1
+
+    # Startup: 90-180 seconds (CUDA init, model deserialization)
+    # mu = ln(130) ≈ 4.87
+    pod_startup_time:
+      distribution: lognormal
+      mu: 4.8
+      sigma: 0.3
+    
+    # Lost GPU cycles are expensive
+    outage_penalty_hours:
+      distribution: uniform
+      low: 3.0
+      high: 8.0
+    
+    migration_cost_multiplier: 1.2
+    weight: 0.08
+
+
+  # ---------------------------------------------------------------------------
+  # BATCH JOB (CI/CD, ETL, Cron)
+  # Fast startup, low penalty (can retry)
+  # ---------------------------------------------------------------------------
+  batch_job:
+    priority: P3
+
+    # Startup: 25-50 seconds
+    # mu = ln(35) ≈ 3.55
+    pod_startup_time:
+      distribution: lognormal
+      mu: 3.45
+      sigma: 0.28
+    
+    # Batch jobs can typically be retried
+    outage_penalty_hours:
+      distribution: constant
+      value: 0.4
+    
+    migration_cost_multiplier: 0.25
+    weight: 0.15
+
+
+  # ---------------------------------------------------------------------------
+  # CACHE (Redis, Memcached)
+  # Fast startup, but cache warming takes time
+  # ---------------------------------------------------------------------------
+  cache:
+    priority: P2
+
+    # Startup: 30-60 seconds (but cache is cold)
+    # mu = ln(45) ≈ 3.8
+    pod_startup_time:
+      distribution: lognormal
+      mu: 3.65
+      sigma: 0.3
+    
+    # Cache miss storms can cascade
+    outage_penalty_hours:
+      distribution: uniform
+      low: 0.8
+      high: 2.2
+    
+    migration_cost_multiplier: 0.35
+    weight: 0.10
+
+
+# ---------------------------------------------------------------------------
+# Reference bounds for workload features used by RL.
+# Single source-of-truth replacement for data/workload_profile_bounds.json.
+# Refresh after regenerating data/workload_profiles.json.
+# ---------------------------------------------------------------------------
+workload_profile_bounds:
+  generated_from: data/workload_profiles.json
+  count: 1000
+  overall:
+    pod_startup_time:
+      count: 1000
+      min: 3.0
+      p05: 6.0
+      p50: 31.0
+      p95: 205.15
+      max: 500.0
+    migration_cost:
+      count: 1000
+      min: 0.0
+      p05: 0.0
+      p50: 0.04
+      p95: 2.89
+      max: 7.22
+    outage_penalty_hours:
+      count: 1000
+      min: 0.3
+      p05: 0.4
+      p50: 1.1
+      p95: 12.605
+      max: 66.9
+    cluster_utilization_typical:
+      count: 1000
+      min: 0.32
+      p05: 0.51
+      p50: 0.73
+      p95: 0.89
+      max: 0.99
+  by_priority:
+    P0:
+      pod_startup_time:
+        count: 60
+        min: 66.0
+        p05: 108.85
+        p50: 183.5
+        p95: 313.65
+        max: 413.0
+      migration_cost:
+        count: 60
+        min: 0.96
+        p05: 1.5085
+        p50: 2.62
+        p95: 4.4565
+        max: 7.22
+      outage_penalty_hours:
+        count: 60
+        min: 4.8
+        p05: 6.0
+        p50: 13.0
+        p95: 26.585
+        max: 66.9
+      cluster_utilization_typical:
+        count: 60
+        min: 0.32
+        p05: 0.399
+        p50: 0.49
+        p95: 0.61
+        max: 0.68
+    P1:
+      pod_startup_time:
+        count: 120
+        min: 52.0
+        p05: 81.95
+        p50: 148.0
+        p95: 317.7
+        max: 500.0
+      migration_cost:
+        count: 120
+        min: 0.28
+        p05: 0.38
+        p50: 0.78
+        p95: 4.3285
+        max: 6.11
+      outage_penalty_hours:
+        count: 120
+        min: 2.6
+        p05: 3.195
+        p50: 6.35
+        p95: 15.615
+        max: 17.0
+      cluster_utilization_typical:
+        count: 120
+        min: 0.47
+        p05: 0.51
+        p50: 0.6
+        p95: 0.6905
+        max: 0.76
+    P2:
+      pod_startup_time:
+        count: 470
+        min: 6.0
+        p05: 11.0
+        p50: 31.0
+        p95: 70.0
+        max: 126.0
+      migration_cost:
+        count: 470
+        min: 0.0
+        p05: 0.01
+        p50: 0.05
+        p95: 0.15
+        max: 0.25
+      outage_penalty_hours:
+        count: 470
+        min: 0.4
+        p05: 0.6
+        p50: 1.4
+        p95: 2.7
+        max: 3.6
+      cluster_utilization_typical:
+        count: 470
+        min: 0.5
+        p05: 0.58
+        p50: 0.7
+        p95: 0.81
+        max: 0.9
+    P3:
+      pod_startup_time:
+        count: 350
+        min: 3.0
+        p05: 4.0
+        p50: 13.0
+        p95: 44.55
+        max: 76.0
+      migration_cost:
+        count: 350
+        min: 0.0
+        p05: 0.0
+        p50: 0.01
+        p95: 0.05
+        max: 0.08
+      outage_penalty_hours:
+        count: 350
+        min: 0.3
+        p05: 0.3
+        p50: 0.5
+        p95: 0.6
+        max: 0.7
+      cluster_utilization_typical:
+        count: 350
+        min: 0.73
+        p05: 0.77
+        p50: 0.84
+        p95: 0.91
+        max: 0.99

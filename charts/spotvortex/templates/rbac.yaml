@@ -1,0 +1,56 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "spotvortex.fullname" . }}
+  labels:
+    {{- include "spotvortex.labels" . | nindent 4 }}
+rules:
+  # Node management (architecture.md: cordon/drain)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  
+  # Pod eviction (drain.go: Eviction API)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  
+  # PDB awareness (best_practices.md)
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  
+  # Events for audit logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  
+  # Node labels for Karpenter mode (mission_guardrail.md)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch"]
+    
+  # Karpenter NodePool (if using Karpenter)
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools", "nodeclaims"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "spotvortex.fullname" . }}
+  labels:
+    {{- include "spotvortex.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "spotvortex.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "spotvortex.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

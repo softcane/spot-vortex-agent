@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spotvortex.fullname" . }}-config
+  labels:
+    {{- include "spotvortex.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    controller:
+      riskThreshold: {{ .Values.controller.riskThreshold }}
+      maxDrainRatio: {{ .Values.controller.maxDrainRatio }}
+      reconcileIntervalSeconds: {{ .Values.controller.reconcileIntervalSeconds }}
+      confidenceThreshold: {{ .Values.controller.confidenceThreshold }}
+      drainGracePeriodSeconds: {{ .Values.controller.drainGracePeriodSeconds }}
+
+    inference:
+      tftModelPath: {{ .Values.inference.tftModelPath | quote }}
+      rlModelPath: {{ .Values.inference.rlModelPath | quote }}
+      modelManifestPath: {{ .Values.inference.modelManifestPath | quote }}
+      expectedCloud: {{ default .Values.cloud .Values.inference.expectedCloud | quote }}
+
+    prometheus:
+      url: {{ .Values.prometheus.url | quote }}
+      timeoutSeconds: {{ .Values.prometheus.timeoutSeconds }}
+
+    aws:
+      region: {{ .Values.aws.region | quote }}
+      instanceTypes:
+{{- range .Values.aws.instanceTypes }}
+        - {{ . | quote }}
+{{- end }}
+      availabilityZones:
+{{- range .Values.aws.availabilityZones }}
+        - {{ . | quote }}
+{{- end }}
+
+    gcp:
+      projectId: {{ .Values.gcp.projectId | quote }}
+      region: {{ .Values.gcp.region | quote }}
+      machineTypes:
+{{- range .Values.gcp.machineTypes }}
+        - {{ . | quote }}
+{{- end }}
+
+    karpenter:
+      enabled: {{ .Values.karpenter.enabled }}
+      useExtendedPoolId: {{ .Values.karpenter.useExtendedPoolId }}
+      spotNodePoolSuffix: {{ .Values.karpenter.spotNodePoolSuffix | quote }}
+      onDemandNodePoolSuffix: {{ .Values.karpenter.onDemandNodePoolSuffix | quote }}
+      spotWeight: {{ .Values.karpenter.spotWeight }}
+      onDemandWeight: {{ .Values.karpenter.onDemandWeight }}
+{{- if .Values.karpenter.managedWorkloadPools }}
+      managedWorkloadPools:
+{{- range .Values.karpenter.managedWorkloadPools }}
+        - {{ . | quote }}
+{{- end }}
+{{- else }}
+      managedWorkloadPools: []
+{{- end }}
+      weightChangeCooldownSeconds: {{ .Values.karpenter.weightChangeCooldownSeconds }}
+      usePoolLevelInference: {{ .Values.karpenter.usePoolLevelInference }}
+      respectDisruptionBudgets: {{ .Values.karpenter.respectDisruptionBudgets }}

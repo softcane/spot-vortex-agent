@@ -1,0 +1,36 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: spotvortex-e2e
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 30000
+        hostPort: 30000
+        protocol: TCP
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "karpenter.sh/capacity-type=spot,karpenter.sh/nodepool=default,spotvortex.io/managed=true,node.kubernetes.io/instance-type=m5.large,topology.kubernetes.io/zone=us-east-1a"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "karpenter.sh/capacity-type=spot,karpenter.sh/nodepool=default,spotvortex.io/managed=true,node.kubernetes.io/instance-type=m5.large,topology.kubernetes.io/zone=us-east-1b"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=default,spotvortex.io/managed=true,node.kubernetes.io/instance-type=m5.large,topology.kubernetes.io/zone=us-east-1a"

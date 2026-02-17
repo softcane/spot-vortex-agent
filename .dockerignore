@@ -1,0 +1,44 @@
+# SpotVortex Docker Ignore
+# Exclude large model files and Python environments
+
+# Models (bundle runtime artifacts only)
+models/*
+!models/tft.onnx
+!models/tft.onnx.data
+!models/rl_policy.onnx
+!models/rl_policy.onnx.data
+!models/MODEL_MANIFEST.json
+*.ckpt
+*.pt
+*.pth
+*.zip
+
+# Python environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Test artifacts
+tests/e2e/.venv/
+
+# External data
+external/
+data/
+
+# IDE and git
+.git/
+.idea/
+.vscode/
+*.swp
+
+# Documentation
+docs/
+*.md
+
+# Helm charts (not needed in image)
+charts/
+
+# wandb
+wandb/

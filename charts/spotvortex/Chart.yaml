@@ -1,0 +1,24 @@
+apiVersion: v2
+name: spotvortex
+description: SpotVortex - The Stripe of Spot Computing
+type: application
+version: 1.0.0
+appVersion: "1.1.0"
+
+keywords:
+  - kubernetes
+  - spot-instances
+  - cost-optimization
+  - ml
+  - karpenter
+
+home: https://spotvortex.io
+sources:
+  - https://github.com/spotvortex/spotvortex
+
+maintainers:
+  - name: SpotVortex Team
+    email: support@spotvortex.io
+
+annotations:
+  category: Cost Optimization

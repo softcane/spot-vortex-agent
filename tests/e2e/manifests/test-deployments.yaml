@@ -1,0 +1,160 @@
+# Test Deployments for SpotVortex E2E Testing
+# Simulates realistic workloads with SpotVortex annotations
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-service
+  namespace: default
+  labels:
+    app: java-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: java-service
+  template:
+    metadata:
+      labels:
+        app: java-service
+      annotations:
+        spotvortex.io/startup-time-estimate: "600"
+        spotvortex.io/outage-penalty-hours: "10"
+        spotvortex.io/priority: "P0"
+        spotvortex.io/outage-penalty: "10"
+        spotvortex.io/startup-time: "600"
+        spotvortex.io/migration-strategy: "graceful-only"
+        spotvortex.io/critical: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values:
+                - on-demand
+      containers:
+        - name: java-app
+          image: nginx:alpine  # Lightweight stand-in
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-api
+  namespace: default
+  labels:
+    app: python-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: python-api
+  template:
+    metadata:
+      labels:
+        app: python-api
+      annotations:
+        spotvortex.io/startup-time-estimate: "10"
+        spotvortex.io/outage-penalty-hours: "0.5"
+        spotvortex.io/priority: "P2"
+        spotvortex.io/outage-penalty: "0.5"
+        spotvortex.io/startup-time: "10"
+        spotvortex.io/migration-strategy: "aggressive"
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values:
+                - on-demand
+      containers:
+        - name: api
+          image: nginx:alpine
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+  namespace: default
+  labels:
+    app: redis-cache
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis-cache
+  template:
+    metadata:
+      labels:
+        app: redis-cache
+      annotations:
+        spotvortex.io/startup-time-estimate: "30"
+        spotvortex.io/outage-penalty-hours: "5"
+        spotvortex.io/priority: "P1"
+        spotvortex.io/outage-penalty: "5"
+        spotvortex.io/startup-time: "30"
+        spotvortex.io/migration-strategy: "graceful-only"
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values:
+                - on-demand
+      containers:
+        - name: redis
+          image: nginx:alpine
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: java-service-pdb
+  namespace: default
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: java-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-cache-pdb
+  namespace: default
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: redis-cache

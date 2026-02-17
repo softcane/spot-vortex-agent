@@ -1,0 +1,99 @@
+# SpotVortex Helm values
+
+# Required: API key used by backend integrations.
+apiKey: ""
+
+# Cloud this deployment targets.
+cloud: aws
+
+mode:
+  # If true, controller runs in dry-run mode (no node drains).
+  dryRun: false
+
+controller:
+  riskThreshold: 0.85
+  maxDrainRatio: 0.10
+  reconcileIntervalSeconds: 30
+  confidenceThreshold: 0.50
+  drainGracePeriodSeconds: 60
+
+inference:
+  # Models are expected to be bundled in the container image or mounted externally.
+  tftModelPath: "models/tft.onnx"
+  rlModelPath: "models/rl_policy.onnx"
+  modelManifestPath: "models/MODEL_MANIFEST.json"
+  expectedCloud: "aws"
+
+prometheus:
+  enabled: true
+  url: "http://prometheus:9090"
+  timeoutSeconds: 10
+
+aws:
+  region: "us-east-1"
+  instanceTypes:
+    - "m5.large"
+    - "m5.xlarge"
+    - "m5.2xlarge"
+    - "c5.large"
+    - "c5.xlarge"
+    - "c5.2xlarge"
+    - "r5.large"
+    - "r5.xlarge"
+  availabilityZones:
+    - "us-east-1a"
+    - "us-east-1b"
+    - "us-east-1c"
+    - "us-east-1d"
+
+gcp:
+  projectId: ""
+  region: "us-central1"
+  machineTypes:
+    - "n1-standard-2"
+    - "n1-standard-4"
+    - "n2-standard-2"
+    - "n2-standard-4"
+
+karpenter:
+  enabled: true
+  useExtendedPoolId: false
+  spotNodePoolSuffix: "-spot"
+  onDemandNodePoolSuffix: "-od"
+  spotWeight: 100
+  onDemandWeight: 10
+  managedWorkloadPools: []
+  weightChangeCooldownSeconds: 60
+  usePoolLevelInference: true
+  respectDisruptionBudgets: true
+
+agent:
+  image:
+    repository: ghcr.io/spotvortex/agent
+    tag: "1.1.0"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  nodeSelector: {}
+  tolerations:
+    - key: "kubernetes.io/arch"
+      operator: "Equal"
+      value: "amd64"
+      effect: "NoSchedule"
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: spotvortex
+  annotations: {}

@@ -1,0 +1,42 @@
+controller:
+  riskThreshold: 0.85
+  maxDrainRatio: 0.5
+  reconcileIntervalSeconds: 15
+  confidenceThreshold: 0.50
+  drainGracePeriodSeconds: 15
+
+inference:
+  tftModelPath: "models_latest/tft.onnx"
+  rlModelPath: "models_latest/rl_policy.onnx"
+  modelManifestPath: "models_latest/MODEL_MANIFEST.json"
+  expectedCloud: "aws"
+
+prometheus:
+  url: "http://127.0.0.1:9090"
+  timeoutSeconds: 10
+
+aws:
+  region: "us-east-1"
+  instanceTypes:
+    - "m5.large"
+  availabilityZones:
+    - "us-east-1a"
+
+gcp:
+  projectId: ""
+  region: "us-central1"
+  machineTypes:
+    - "n1-standard-2"
+
+# Karpenter integration (per PRODUCTION_FLOW_EKS_KARPENTER.md)
+karpenter:
+  enabled: true
+  useExtendedPoolId: true
+  spotNodePoolSuffix: "-spot"
+  onDemandNodePoolSuffix: "-od"
+  spotWeight: 100
+  onDemandWeight: 10
+  managedWorkloadPools: []  # Empty = manage all pools
+  weightChangeCooldownSeconds: 60
+  usePoolLevelInference: true  # Section 6 Option 2
+  respectDisruptionBudgets: true  # Section 2.4
