@@ -99,5 +99,4 @@ jobs:
         env:
           KUBECONFIG: ${{ steps.setup.outputs.workload_kubeconfig }}
           SPOTVORTEX_E2E_SUITE: eksa-ca
-        run: |
         run: make test-e2e-eksa

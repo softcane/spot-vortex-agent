@@ -30,5 +30,4 @@ jobs:
       - name: Run karpenter-local suite
         env:
           SPOTVORTEX_E2E_SUITE: karpenter-local
-        run: |
         run: make test-e2e-karpenter
