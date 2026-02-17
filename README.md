@@ -1,25 +1,21 @@
-# SpotVortex Agent (Split Workspace)
+# SpotVortex Agent
 
-This directory is a copy-ready workspace for the open-source `spot-vortex-agent` repository.
+Kubernetes operator runtime for SpotVortex. This repository contains only the Go agent/control-plane runtime.
 
-## Included
+## What is included
 
-- `cmd/` (agent CLI)
-- `internal/` (controller, inference, cloud integrations)
-- `charts/spotvortex/` (Helm chart)
-- `tests/e2e/` (Kind/KWOK e2e tests)
-- `config/` runtime defaults (`default.yaml`, `kind.yaml`, `runtime.json`, `workload_distributions.yaml`)
-- `dashboards/spotvortex-dryrun.json`
+- Go agent (`cmd/`, `internal/`)
+- Helm chart (`charts/spotvortex`)
+- Kind/KWOK e2e tests (`tests/e2e`)
 
-## Not Included
+## What is not included
 
-- ML training package (`vortex/`)
-- Data prep and training scripts (`scripts/data_prep/`, TFT/RL/PySR runners)
-- Datasets, checkpoints, and private experiment artifacts
+- TFT/RL/PySR training pipelines
+- data preparation and training datasets
 
-## Model Contract
+## Model contract
 
-Runtime expects pre-exported artifacts:
+The agent consumes exported model artifacts from the ML pipeline:
 
 - `models/tft.onnx`
 - `models/tft.onnx.data`
@@ -27,17 +23,33 @@ Runtime expects pre-exported artifacts:
 - `models/rl_policy.onnx.data`
 - `models/MODEL_MANIFEST.json`
 
-Agent startup enforces manifest validation and checksum verification.
+Startup enforces manifest presence and checksum verification.
 
-## Quick validation
+## One-line install (Helm OCI)
 
 ```bash
-# Core packages (works without model bundle)
-go list ./... | rg -v '/tests/e2e' | xargs go test -count=1
+helm upgrade --install spotvortex oci://ghcr.io/<org>/charts/spotvortex \
+  --namespace spotvortex --create-namespace \
+  --set apiKey=<API_KEY>
+```
 
-# Helm render
+Install script option:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<org>/spot-vortex-agent/main/hack/install.sh | SPOTVORTEX_API_KEY=<API_KEY> bash
+```
+
+## Local validation
+
+```bash
+go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
+helm lint charts/spotvortex
 helm template spotvortex charts/spotvortex --set apiKey=dummy >/tmp/spotvortex_chart.yaml
+docker build -t spotvortex-agent:local .
+```
 
-# E2E requires model artifacts in ./models
+Optional e2e:
+
+```bash
 go test -v ./tests/e2e -run TestFullInferencePipeline -count=1
 ```
