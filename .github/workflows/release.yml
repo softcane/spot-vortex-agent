@@ -22,7 +22,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Verify tests (non-e2e)
-        run: go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
+        run: make test-unit
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,8 +49,6 @@ jobs:
 
       - name: Package and push Helm chart
         run: |
-          mkdir -p dist
-          helm dependency update charts/spotvortex || true
-          helm package charts/spotvortex --destination dist
+          make helm-package
           helm registry login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
           helm push dist/spotvortex-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

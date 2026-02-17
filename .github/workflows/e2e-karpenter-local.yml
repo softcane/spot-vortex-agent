@@ -31,4 +31,4 @@ jobs:
         env:
           SPOTVORTEX_E2E_SUITE: karpenter-local
         run: |
-          go test -v ./tests/e2e -run 'TestKarpenterLocal_' -count=1
+        run: make test-e2e-karpenter

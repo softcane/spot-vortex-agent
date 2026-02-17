@@ -24,27 +24,22 @@ jobs:
           go-version-file: go.mod
 
       - name: Go test (non-e2e)
-        run: |
-          go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
+        run: make test-unit
 
       - name: Fault injection tests (required)
-        run: |
-          go test -count=1 ./internal/capacity -run 'TestKarpenterManager_PrepareSwap_(MissingNodePools|PatchDenied|PartialPatchSuccessStillReady)'
-          go test -count=1 ./internal/controller -run 'TestDrain_AbortsWhenPDBBlocks'
+        run: make test-fault-injection
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
       - name: Helm lint/template
-        run: |
-          helm lint charts/spotvortex
-          helm template spotvortex charts/spotvortex --set apiKey=dummy >/tmp/spotvortex_chart.yaml
+        run: make helm-lint
 
       - name: Docker build
-        run: docker build -t spotvortex-agent:ci .
+        run: make docker-build
 
   e2e-kind:
-    if: github.event_name == 'workflow_dispatch'
+    #if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
