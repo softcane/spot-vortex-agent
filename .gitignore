@@ -66,4 +66,6 @@ kubeconfig
 *.kubeconfig
 
 # doc
-docs_internal
+docs_internal.venv/
+__pycache__/
+*.pyc
