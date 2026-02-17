@@ -1,0 +1,23 @@
+# Build artifacts
+bin/
+
+# Runtime model bundle (provided out-of-band)
+models/
+
+# Local data and logs
+data/
+*.log
+
+# Coverage / temp
+.coverprofile
+.tmp/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Python caches from optional tooling
+__pycache__/
+*.pyc
+.pytest_cache/
