@@ -1,23 +1,69 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
 # Build artifacts
 bin/
+dist/
 
 # Runtime model bundle (provided out-of-band)
-models/
+#models/*.onnx
+#models/*.data
 
 # Local data and logs
 data/
 *.log
+logs/
 
 # Coverage / temp
 .coverprofile
+coverage.txt
 .tmp/
+tmp/
 
 # Secrets
 .env
+.env.local
 *.pem
 *.key
+*.p12
 
-# Python caches from optional tooling
-__pycache__/
-*.pyc
-.pytest_cache/
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.openai
+.claude
+CLAUDE.md
+AGENTS.md
+
+# Helm
+*.tgz
+charts/*/charts/
+charts/*/tmpcharts/
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# doc
+docs_internal

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -165,68 +165,6 @@ func (m *metricSynth) Next(nodeID string) (float64, float64) {
 	return cpu, mem
 }
 
-type priceSynth struct {
-	mu       sync.Mutex
-	rng      *rand.Rand
-	last     map[string]float64
-	history  map[string][]float64
-	ondemand map[string]float64
-	minPrice float64
-	maxPrice float64
-}
-
-func newPriceSynth(seed int64) *priceSynth {
-	return &priceSynth{
-		rng:      rand.New(rand.NewSource(seed)),
-		last:     make(map[string]float64),
-		history:  make(map[string][]float64),
-		ondemand: make(map[string]float64),
-		minPrice: 0.10,
-		maxPrice: 3.00,
-	}
-}
-
-func (p *priceSynth) Next(nodeID string, isSpot bool) (float64, float64, []float64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	ondemand := p.ondemand[nodeID]
-	if ondemand == 0 {
-		ondemand = 1.2 + p.rng.Float64()*1.0
-		p.ondemand[nodeID] = ondemand
-	}
-
-	price := p.last[nodeID]
-	if price == 0 {
-		price = ondemand * (0.35 + p.rng.Float64()*0.3)
-	} else {
-		price *= 1.0 + (p.rng.Float64()*0.1 - 0.05)
-	}
-
-	spikeChance := 0.05
-	if isSpot {
-		spikeChance = 0.15
-	}
-	if p.rng.Float64() < spikeChance {
-		price = ondemand * (0.8 + p.rng.Float64()*0.3)
-	}
-
-	if price > ondemand {
-		price = ondemand * 0.98
-	}
-
-	price = clampFloat(price, p.minPrice, minFloat(p.maxPrice, ondemand))
-	p.last[nodeID] = price
-
-	history := append(p.history[nodeID], price)
-	if len(history) > 24 {
-		history = history[len(history)-24:]
-	}
-	p.history[nodeID] = history
-
-	return price, ondemand, append([]float64(nil), history...)
-}
-
 func clampFloat(value, min, max float64) float64 {
 	if value < min {
 		return min
@@ -239,13 +177,6 @@ func clampFloat(value, min, max float64) float64 {
 
 func maxFloat(a, b float64) float64 {
 	if a > b {
-		return a
-	}
-	return b
-}
-
-func minFloat(a, b float64) float64 {
-	if a < b {
 		return a
 	}
 	return b

@@ -7,9 +7,9 @@ import (
 
 	"log/slog"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/controller"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/controller"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -22,10 +22,12 @@ func TestV2MigrationScenarios(t *testing.T) {
 	// 1. Initialize Inference Engine with V2 models
 	logger := slog.Default()
 	infEngine, err := inference.NewInferenceEngine(inference.EngineConfig{
-		TFTModelPath:       "../../models/tft.onnx",
-		RLModelPath:        "../../models/rl_policy.onnx",
-		RequireRuntimeHead: true,
-		Logger:             logger,
+		TFTModelPath:        "../../models/tft.onnx",
+		RLModelPath:         "../../models/rl_policy.onnx",
+		PySRCalibrationPath: "../../models/pysr/calibration_equation.txt",
+		PySRFusionPath:      "../../models/pysr/context_equation.txt",
+		RequireRuntimeHead:  true,
+		Logger:              logger,
 	})
 	if err != nil {
 		t.Fatalf("Failed to load V2 models: %v", err)

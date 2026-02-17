@@ -27,6 +27,8 @@ spec:
             - --config=/etc/spotvortex/config.yaml
             {{- if .Values.mode.dryRun }}
             - --dry-run
+            {{- else }}
+            - --dry-run=false
             {{- end }}
           env:
             - name: SPOTVORTEX_API_KEY

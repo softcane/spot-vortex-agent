@@ -13,8 +13,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/karpenter"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/karpenter"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 )
 
 // Action represents an RL action.

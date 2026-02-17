@@ -9,24 +9,33 @@ inference:
   tftModelPath: "models_latest/tft.onnx"
   rlModelPath: "models_latest/rl_policy.onnx"
   modelManifestPath: "models_latest/MODEL_MANIFEST.json"
+  # Must match manifest cloud (if set).
   expectedCloud: "aws"
 
 prometheus:
   url: "http://127.0.0.1:9090"
   timeoutSeconds: 10
 
+# Autoscaling (ASG) integration enabled for Kind testing with FakeASGClient
+autoscaling:
+  enabled: true
+  discoveryTags:
+    pool: "spotvortex.io/pool"
+    type: "spotvortex.io/capacity-type"
+  nodeReadyTimeoutSeconds: 60  # Short timeout for Kind tests
+  pollIntervalSeconds: 2
+
 aws:
   region: "us-east-1"
-  instanceTypes:
-    - "m5.large"
-  availabilityZones:
-    - "us-east-1a"
+  # Optional catalog hints for pricing workflows (not model-scope enforcement).
+  instanceTypes: []
+  availabilityZones: []
 
 gcp:
   projectId: ""
   region: "us-central1"
-  machineTypes:
-    - "n1-standard-2"
+  # Optional catalog hints for pricing workflows (not model-scope enforcement).
+  machineTypes: []
 
 # Karpenter integration (per PRODUCTION_FLOW_EKS_KARPENTER.md)
 karpenter:

@@ -12,12 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/cloudapi"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/collector"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/config"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/karpenter"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
+	"github.com/softcane/spot-vortex-agent/internal/collector"
+	"github.com/softcane/spot-vortex-agent/internal/config"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/karpenter"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -34,7 +35,6 @@ type Controller struct {
 	drain  *Drainer
 	coll   *collector.Collector
 	logger *slog.Logger
-	price  *priceSynth
 	metric *metricSynth
 
 	// Karpenter integration (per PRODUCTION_FLOW_EKS_KARPENTER.md)
@@ -42,13 +42,16 @@ type Controller struct {
 	karpenterCfg  config.KarpenterConfig
 	dynamicClient dynamic.Interface
 
+	// Capacity management: unified routing across Karpenter, CA, and MNG.
+	// Per integration_strategy.md: routes per-node based on provisioner labels.
+	capacityRouter *capacity.Router
+
 	// Configuration - ALL values from config file, NO defaults
 	riskThreshold       float64
 	maxDrainRatio       float64
 	reconcileInterval   time.Duration
 	confidenceThreshold float64
 	useSyntheticMetrics bool
-	useSyntheticPrices  bool
 
 	// State
 	running         bool
@@ -87,6 +90,10 @@ type Config struct {
 	DrainGracePeriodSeconds int64
 	// Karpenter configuration (per PRODUCTION_FLOW_EKS_KARPENTER.md)
 	Karpenter config.KarpenterConfig
+	// Autoscaling (ASG) configuration for CA/MNG integration
+	Autoscaling config.AutoscalingConfig
+	// ASGClient for ASG operations (nil = disabled, use FakeASGClient for testing)
+	ASGClient capacity.ASGClient
 }
 
 // New creates a new Controller instance.
@@ -107,6 +114,9 @@ func New(cfg Config) (*Controller, error) {
 	if cfg.Cloud == nil {
 		return nil, fmt.Errorf("cloud provider is required")
 	}
+	if cfg.PriceProvider == nil {
+		return nil, fmt.Errorf("price provider is required for real market data")
+	}
 
 	// Validate config values - NO hardcoded defaults
 	if cfg.RiskThreshold <= 0 || cfg.RiskThreshold > 1 {
@@ -122,15 +132,14 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("confidenceThreshold must be between 0 and 1")
 	}
 
-	useSyntheticMetrics := strings.EqualFold(os.Getenv("SPOTVORTEX_METRICS_MODE"), "synthetic")
 	useSyntheticPrices := strings.EqualFold(os.Getenv("SPOTVORTEX_PRICE_MODE"), "synthetic")
-	if (useSyntheticMetrics || useSyntheticPrices) && !cfg.Cloud.IsDryRun() {
-		return nil, fmt.Errorf("synthetic telemetry modes are blocked when dry-run is disabled: SPOTVORTEX_METRICS_MODE=%q SPOTVORTEX_PRICE_MODE=%q", os.Getenv("SPOTVORTEX_METRICS_MODE"), os.Getenv("SPOTVORTEX_PRICE_MODE"))
+	if useSyntheticPrices {
+		return nil, fmt.Errorf("synthetic price mode is not supported: SPOTVORTEX_PRICE_MODE=%q; shadow mode requires real market data", os.Getenv("SPOTVORTEX_PRICE_MODE"))
 	}
 
-	var priceSynth *priceSynth
-	if useSyntheticPrices {
-		priceSynth = newPriceSynth(time.Now().UnixNano())
+	useSyntheticMetrics := strings.EqualFold(os.Getenv("SPOTVORTEX_METRICS_MODE"), "synthetic")
+	if useSyntheticMetrics && !cfg.Cloud.IsDryRun() {
+		return nil, fmt.Errorf("synthetic metrics mode is blocked when --dry-run is false: SPOTVORTEX_METRICS_MODE=%q", os.Getenv("SPOTVORTEX_METRICS_MODE"))
 	}
 
 	var metricSynth *metricSynth
@@ -143,6 +152,7 @@ func New(cfg Config) (*Controller, error) {
 		drainer = NewDrainer(cfg.K8sClient, logger, DrainConfig{
 			GracePeriodSeconds: cfg.DrainGracePeriodSeconds,
 			Timeout:            5 * time.Minute,
+			DryRun:             cfg.Cloud.IsDryRun(),
 			IgnoreDaemonSets:   true,
 			DeleteEmptyDirData: true,
 		})
@@ -160,6 +170,56 @@ func New(cfg Config) (*Controller, error) {
 		)
 	}
 
+	// Build unified capacity router with all enabled managers.
+	var capacityManagers []capacity.CapacityManager
+
+	if nodePoolMgr != nil {
+		kMgr := capacity.NewKarpenterManager(capacity.KarpenterManagerConfig{
+			NodePoolManager:        nodePoolMgr,
+			Logger:                 logger,
+			SpotNodePoolSuffix:     cfg.Karpenter.SpotNodePoolSuffix,
+			OnDemandNodePoolSuffix: cfg.Karpenter.OnDemandNodePoolSuffix,
+			SpotWeight:             cfg.Karpenter.SpotWeight,
+			OnDemandWeight:         cfg.Karpenter.OnDemandWeight,
+			CooldownSeconds:        cfg.Karpenter.WeightChangeCooldownSeconds,
+		})
+		capacityManagers = append(capacityManagers, kMgr)
+	}
+
+	if cfg.Autoscaling.Enabled && cfg.ASGClient != nil {
+		// Register ASG manager for both CA and MNG (they share ASG mechanics)
+		asgMgr := capacity.NewASGManager(capacity.ASGManagerConfig{
+			ASGClient:        cfg.ASGClient,
+			K8sClient:        cfg.K8sClient,
+			Logger:           logger,
+			ManagerType:      capacity.ManagerClusterAutoscaler,
+			NodeReadyTimeout: cfg.Autoscaling.NodeReadyTimeout(),
+			PollInterval:     cfg.Autoscaling.PollInterval(),
+		})
+		capacityManagers = append(capacityManagers, asgMgr)
+
+		// Also register for MNG (same ASG workflow, different ManagerType)
+		mngMgr := capacity.NewASGManager(capacity.ASGManagerConfig{
+			ASGClient:        cfg.ASGClient,
+			K8sClient:        cfg.K8sClient,
+			Logger:           logger,
+			ManagerType:      capacity.ManagerManagedNodegroup,
+			NodeReadyTimeout: cfg.Autoscaling.NodeReadyTimeout(),
+			PollInterval:     cfg.Autoscaling.PollInterval(),
+		})
+		capacityManagers = append(capacityManagers, mngMgr)
+
+		logger.Info("ASG integration enabled",
+			"pool_tag", cfg.Autoscaling.DiscoveryTags.Pool,
+			"capacity_tag", cfg.Autoscaling.DiscoveryTags.CapacityType,
+		)
+	}
+
+	capacityRouter := capacity.NewRouter(logger, capacityManagers...)
+	logger.Info("capacity router initialized",
+		"registered_managers", capacityRouter.RegisteredTypes(),
+	)
+
 	return &Controller{
 		cloud:               cfg.Cloud,
 		priceP:              cfg.PriceProvider,
@@ -170,16 +230,15 @@ func New(cfg Config) (*Controller, error) {
 		drain:               drainer,
 		coll:                collector.NewCollector(cfg.K8sClient, logger), // Wiring Collector
 		logger:              logger,
-		price:               priceSynth,
 		metric:              metricSynth,
 		nodePoolMgr:         nodePoolMgr,
 		karpenterCfg:        cfg.Karpenter,
+		capacityRouter:      capacityRouter,
 		riskThreshold:       cfg.RiskThreshold,
 		maxDrainRatio:       cfg.MaxDrainRatio,
 		reconcileInterval:   cfg.ReconcileInterval,
 		confidenceThreshold: cfg.ConfidenceThreshold,
 		useSyntheticMetrics: useSyntheticMetrics,
-		useSyntheticPrices:  useSyntheticPrices,
 		stopCh:              make(chan struct{}),
 		priceHistory:        make(map[string][]float64),
 		lastMigration:       make(map[string]time.Time),
@@ -207,7 +266,6 @@ func (c *Controller) Start(ctx context.Context) error {
 		"reconcile_interval", c.reconcileInterval,
 		"dry_run", c.cloud.IsDryRun(),
 		"synthetic_metrics", c.useSyntheticMetrics,
-		"synthetic_prices", c.useSyntheticPrices,
 	)
 
 	ticker := time.NewTicker(c.reconcileInterval)
@@ -302,11 +360,13 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	// Step 4: Apply thundering herd protection (respects Karpenter disruption budgets)
 	nodesToDrain := c.applyDrainLimit(ctx, actionableNodes, len(nodeMetrics))
 
-	// Step 5: Batch steer Karpenter weights BEFORE draining
-	// Per PRODUCTION_FLOW_EKS_KARPENTER.md: weights must be updated before drains
-	// so that Karpenter provisions the correct capacity type for pending pods.
-	// In dry-run mode, this logs but doesn't actually patch
+	// Step 5: Prepare replacement capacity BEFORE draining.
+	// Routes to the correct CapacityManager per node:
+	// - Karpenter nodes: batch steer NodePool weights (fast, non-blocking)
+	// - CA/MNG nodes: scale up twin ASG, wait for Ready (blocking)
+	// Legacy path: still calls batchSteerKarpenterWeights for backward compat
 	c.batchSteerKarpenterWeights(ctx, nodesToDrain)
+	c.prepareCapacitySwaps(ctx, nodesToDrain)
 
 	// Step 6: Execute actions (drain nodes)
 	// In dry-run mode, drainer logs but doesn't actually evict pods
@@ -488,16 +548,7 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 		}
 
 		var priceHistory []float64
-		if c.price != nil {
-			spotPrice, ondemandPrice, history := c.price.Next(m.NodeID, m.IsSpot)
-			if m.SpotPrice <= 0 {
-				m.SpotPrice = spotPrice
-			}
-			if m.OnDemandPrice <= 0 {
-				m.OnDemandPrice = ondemandPrice
-			}
-			priceHistory = history
-		} else if c.priceP != nil && m.InstanceType != "" && m.Zone != "" {
+		if c.priceP != nil && m.InstanceType != "" && m.Zone != "" {
 			if cached, ok := priceCache[poolID]; ok {
 				if m.SpotPrice <= 0 {
 					m.SpotPrice = cached.CurrentPrice
@@ -861,10 +912,7 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 		var priceHistory []float64
 		var spotPrice, odPrice float64
 
-		if c.price != nil {
-			// Synthetic mode - use first node for pricing
-			spotPrice, odPrice, priceHistory = c.price.Next(agg.nodes[0].NodeID, agg.spotNodes > 0)
-		} else if c.priceP != nil {
+		if c.priceP != nil {
 			cacheKey := instanceType + ":" + zone
 			if cached, ok := priceCache[cacheKey]; ok {
 				spotPrice = cached.CurrentPrice
@@ -1449,6 +1497,103 @@ func (c *Controller) batchSteerKarpenterWeights(ctx context.Context, nodes []Nod
 	}
 }
 
+// prepareCapacitySwaps routes capacity preparation to the correct CapacityManager per node.
+// For ASG-managed nodes (CA/MNG), this executes the Twin ASG Scale-Wait workflow.
+// For Karpenter nodes, weight steering is already handled by batchSteerKarpenterWeights.
+func (c *Controller) prepareCapacitySwaps(ctx context.Context, nodes []NodeAssessment) {
+	if c.capacityRouter == nil || c.k8s == nil {
+		return
+	}
+
+	// Group nodes by pool and manager type to batch operations
+	type swapRequest struct {
+		pool      capacity.PoolInfo
+		direction capacity.SwapDirection
+		mgrType   capacity.ManagerType
+	}
+	poolSwaps := make(map[string]*swapRequest) // pool name -> swap request
+
+	for _, node := range nodes {
+		nodeObj, err := c.k8s.CoreV1().Nodes().Get(ctx, node.NodeID, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+
+		mgrType := c.capacityRouter.DetectManagerType(nodeObj)
+		// Skip Karpenter nodes (already handled by batchSteerKarpenterWeights)
+		if mgrType == capacity.ManagerKarpenter || mgrType == capacity.ManagerUnknown {
+			continue
+		}
+
+		labels := nodeObj.Labels
+		if labels == nil {
+			continue
+		}
+		workloadPool := labels[collector.WorkloadPoolLabel]
+		if workloadPool == "" {
+			continue
+		}
+
+		// Determine swap direction from action
+		var direction capacity.SwapDirection
+		switch node.Action {
+		case inference.ActionDecrease10, inference.ActionDecrease30, inference.ActionEmergencyExit:
+			direction = capacity.SwapToOnDemand
+		case inference.ActionIncrease10, inference.ActionIncrease30:
+			direction = capacity.SwapToSpot
+		default:
+			continue
+		}
+
+		if _, exists := poolSwaps[workloadPool]; !exists {
+			poolSwaps[workloadPool] = &swapRequest{
+				pool: capacity.PoolInfo{
+					Name:         workloadPool,
+					Zone:         labels["topology.kubernetes.io/zone"],
+					InstanceType: labels["node.kubernetes.io/instance-type"],
+				},
+				direction: direction,
+				mgrType:   mgrType,
+			}
+		}
+	}
+
+	// Execute swaps per pool
+	for poolName, req := range poolSwaps {
+		mgr := c.capacityRouter.ManagerForType(req.mgrType)
+		if mgr == nil {
+			c.logger.Warn("no capacity manager for pool",
+				"pool", poolName,
+				"manager_type", req.mgrType,
+			)
+			continue
+		}
+
+		c.logger.Info("preparing capacity swap",
+			"pool", poolName,
+			"manager", req.mgrType,
+			"direction", req.direction.String(),
+		)
+
+		result, err := mgr.PrepareSwap(ctx, req.pool, req.direction)
+		if err != nil {
+			c.logger.Error("capacity swap preparation failed",
+				"pool", poolName,
+				"error", err,
+			)
+			continue
+		}
+
+		if result.Ready {
+			c.logger.Info("capacity swap ready",
+				"pool", poolName,
+				"replacement_node", result.ReplacementNodeName,
+				"duration", result.Duration,
+			)
+		}
+	}
+}
+
 // getWorkloadPoolFromPoolID extracts the workload pool name from a pool ID.
 // Pool ID formats:
 // - Simple: "<instance_type>:<zone>" -> returns empty string (no workload pool)
@@ -1689,6 +1834,9 @@ func (c *Controller) nodeHasNamespace(ctx context.Context, nodeName, namespace s
 		return false
 	}
 	for _, pod := range pods.Items {
+		if pod.Spec.NodeName != nodeName {
+			continue
+		}
 		if pod.Namespace != namespace {
 			continue
 		}

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/cloudapi"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
 )
 
 func TestSpotWrapper_Drain_DryRun(t *testing.T) {

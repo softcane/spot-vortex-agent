@@ -36,6 +36,9 @@ type Client struct {
 type ClientConfig struct {
 	PrometheusURL string
 	Logger        *slog.Logger
+	// API is an optional Prometheus API client. If nil, one will be created from PrometheusURL.
+	// Useful for testing.
+	API v1.API
 }
 
 // NewClient creates a new Prometheus metrics client.
@@ -46,19 +49,25 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		logger = slog.Default()
 	}
 
-	if cfg.PrometheusURL == "" {
-		return nil, fmt.Errorf("PrometheusURL is required")
-	}
+	var v1api v1.API
+	if cfg.API != nil {
+		v1api = cfg.API
+	} else {
+		if cfg.PrometheusURL == "" {
+			return nil, fmt.Errorf("PrometheusURL is required")
+		}
 
-	client, err := api.NewClient(api.Config{
-		Address: cfg.PrometheusURL,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create prometheus client: %w", err)
+		client, err := api.NewClient(api.Config{
+			Address: cfg.PrometheusURL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create prometheus client: %w", err)
+		}
+		v1api = v1.NewAPI(client)
 	}
 
 	return &Client{
-		api:    v1.NewAPI(client),
+		api:    v1api,
 		logger: logger,
 	}, nil
 }

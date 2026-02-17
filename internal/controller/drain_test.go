@@ -164,6 +164,41 @@ func TestDrain_PDBBlocks(t *testing.T) {
 	}
 }
 
+func TestDrain_AbortsWhenPDBBlocks(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "pdb-node"},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "blocked-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{NodeName: "pdb-node"},
+	}
+
+	client := fake.NewSimpleClientset(node, pod)
+	client.PrependReactor("create", "pods/eviction", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewTooManyRequests("PDB blocks", 10)
+	})
+
+	drainer := NewDrainer(client, nil, DrainConfig{
+		DryRun:             false,
+		GracePeriodSeconds: 30,
+		Force:              false,
+	})
+
+	result, err := drainer.Drain(context.Background(), "pdb-node")
+	if err == nil {
+		t.Fatal("expected drain to fail when eviction is blocked by PDB")
+	}
+	if result.Success {
+		t.Fatal("expected Success=false when drain aborts")
+	}
+	if result.PodsFailed != 1 {
+		t.Fatalf("expected PodsFailed=1, got %d", result.PodsFailed)
+	}
+}
+
 // TestDrain_SkipDaemonSetPod verifies DaemonSet pods are skipped.
 func TestDrain_SkipDaemonSetPod(t *testing.T) {
 	daemonSetPod := &corev1.Pod{

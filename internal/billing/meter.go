@@ -33,7 +33,6 @@ type SavingsEvent struct {
 
 // Meter tracks and reports savings to the billing API.
 type Meter struct {
-	apiKey   string
 	endpoint string
 	enabled  bool
 	dryRun   bool
@@ -58,7 +57,6 @@ type nodeTracker struct {
 
 // MeterConfig holds configuration for the billing meter.
 type MeterConfig struct {
-	APIKey   string
 	Endpoint string
 	Enabled  bool
 	DryRun   bool
@@ -68,7 +66,6 @@ type MeterConfig struct {
 // NewMeter creates a new billing meter.
 func NewMeter(cfg MeterConfig) *Meter {
 	return &Meter{
-		apiKey:      cfg.APIKey,
 		endpoint:    cfg.Endpoint,
 		enabled:     cfg.Enabled,
 		dryRun:      cfg.DryRun,
@@ -174,7 +171,7 @@ func (m *Meter) ReportSavings(ctx context.Context, event SavingsEvent) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.apiKey)
+	// Auth removed for free version
 	req.Header.Set("X-SpotVortex-Version", "1.1.0")
 
 	resp, err := m.client.Do(req)

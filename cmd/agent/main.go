@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/pradeepsingh/spot-vortex-agent/cmd/agent/cmd"
+	"github.com/softcane/spot-vortex-agent/cmd/agent/cmd"
 )
 
 func main() {

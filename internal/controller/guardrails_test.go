@@ -1,7 +1,16 @@
 package controller
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestCheckHighUtilization(t *testing.T) {
@@ -11,12 +20,12 @@ func TestCheckHighUtilization(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		utilization    float64
-		action         Action
-		wantApproved   bool
-		wantModified   Action
-		wantHasReason  bool
+		name          string
+		utilization   float64
+		action        Action
+		wantApproved  bool
+		wantModified  Action
+		wantHasReason bool
 	}{
 		{
 			name:          "low utilization - approve any action",
@@ -147,5 +156,142 @@ func TestCheckConfidence(t *testing.T) {
 				t.Errorf("GuardrailName: got %q, want %q", result.GuardrailName, "low_confidence")
 			}
 		})
+	}
+}
+
+func TestCheckPDB(t *testing.T) {
+	k8s := k8sfake.NewSimpleClientset()
+	g := NewGuardrailChecker(k8s, slog.Default(), 0)
+
+	// Create PDB blocking eviction
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "pdb-1", Namespace: "default"},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: &intstr.IntOrString{Type: intstr.Int, IntVal: 0},
+			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "foo"}},
+		},
+		Status: policyv1.PodDisruptionBudgetStatus{
+			DisruptionsAllowed: 0,
+		},
+	}
+	k8s.PolicyV1().PodDisruptionBudgets("default").Create(context.Background(), pdb, metav1.CreateOptions{})
+
+	// Pod matches PDB
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default", Labels: map[string]string{"app": "foo"}},
+		Spec:       corev1.PodSpec{NodeName: "node-1"},
+	}
+	k8s.CoreV1().Pods("default").Create(context.Background(), pod, metav1.CreateOptions{})
+
+	// Mock Node
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}}
+
+	// Action EmergencyExit -> Check PDB
+	res, err := g.checkPDB(context.Background(), node, ActionEmergencyExit)
+	if err != nil {
+		t.Fatalf("checkPDB failed: %v", err)
+	}
+	if !res.Approved {
+		t.Error("expected Approved=true (downgraded), got false")
+	}
+	if res.ModifiedAction != ActionDecrease30 {
+		t.Errorf("expected ModifiedAction=Decrease30, got %v", res.ModifiedAction)
+	}
+}
+
+func TestCheckClusterFraction(t *testing.T) {
+	k8s := k8sfake.NewSimpleClientset()
+	g := NewGuardrailChecker(k8s, slog.Default(), 0.2) // 20% limit
+
+	// Create 10 nodes (capacity type spot)
+	for i := 0; i < 10; i++ {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("node-%d", i),
+				Labels: map[string]string{
+					"karpenter.sh/capacity-type": "spot",
+				},
+			},
+		}
+		k8s.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
+	}
+
+	// Check 1 node action. Fraction = 1/10 = 0.1 < 0.2 -> OK
+	targetNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-0"}}
+	res, err := g.checkClusterFraction(context.Background(), targetNode)
+	if err != nil {
+		t.Fatalf("checkClusterFraction failed: %v", err)
+	}
+	if !res.Approved {
+		t.Error("0.1 fraction should be approved")
+	}
+
+	// Reduce cluster size to 4 nodes. Fraction = 1/4 = 0.25 > 0.2 -> Block
+	// Delete 6 nodes
+	for i := 4; i < 10; i++ {
+		k8s.CoreV1().Nodes().Delete(context.Background(), fmt.Sprintf("node-%d", i), metav1.DeleteOptions{})
+	}
+
+	// We need to ensure List reflects deletions. Fake client usually does.
+	res, err = g.checkClusterFraction(context.Background(), targetNode)
+	if err != nil {
+		t.Fatalf("checkClusterFraction failed: %v", err)
+	}
+	if res.Approved {
+		t.Error("0.25 fraction should be blocked")
+	}
+}
+
+func TestCheckCriticalWorkloads(t *testing.T) {
+	k8s := k8sfake.NewSimpleClientset()
+	g := NewGuardrailChecker(k8s, slog.Default(), 0)
+
+	// Pod with critical annotation
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "critical-pod",
+			Namespace: "kube-system",
+			Annotations: map[string]string{
+				"spotvortex.io/critical": "true",
+			},
+		},
+		Spec: corev1.PodSpec{NodeName: "node-critical"},
+	}
+	k8s.CoreV1().Pods("kube-system").Create(context.Background(), pod, metav1.CreateOptions{})
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-critical"}}
+
+	res, err := g.checkCriticalWorkloads(context.Background(), node, ActionEmergencyExit)
+	if err != nil {
+		t.Fatalf("checkCriticalWorkloads failed: %v", err)
+	}
+	// Critical pod downgrades Emergency to Decrease30
+	// Wait, checkCriticalWorkloads implementation says:
+	// if pod.Annotations[AnnotationCritical] == "true" { ... return ... ModifiedAction: ActionDecrease30 }
+	if res.ModifiedAction != ActionDecrease30 {
+		t.Errorf("expected downgrade to Decrease30, got %v", res.ModifiedAction)
+	}
+
+	// Delete critical pod to avoid leakage (fake client might not filter by nodeName correctly in List)
+	k8s.CoreV1().Pods("kube-system").Delete(context.Background(), "critical-pod", metav1.DeleteOptions{})
+
+	// Normal pod
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "normal-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{NodeName: "node-normal"},
+	}
+	k8s.CoreV1().Pods("default").Create(context.Background(), pod2, metav1.CreateOptions{})
+
+	nodeNormal := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-normal"}}
+
+	res, err = g.checkCriticalWorkloads(context.Background(), nodeNormal, ActionEmergencyExit)
+	if err != nil {
+		t.Fatalf("checkCriticalWorkloads failed: %v", err)
+	}
+	if !res.Approved {
+		t.Error("normal pod should be approved")
+	}
+	if res.ModifiedAction != ActionEmergencyExit {
+		t.Error("normal pod should not downgrade action")
 	}
 }

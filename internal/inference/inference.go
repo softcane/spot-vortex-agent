@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -38,10 +39,16 @@ type PredictionOutput struct {
 	RecommendedAction string
 }
 
+// ONNXSession defines the interface for an ONNX runtime session.
+type ONNXSession interface {
+	Run(inputs []ort.ArbitraryTensor, outputs []ort.ArbitraryTensor) error
+	Destroy() error
+}
+
 // ONNXInference wraps the ONNX runtime for TFT model inference.
 type ONNXInference struct {
 	mu        sync.RWMutex
-	session   *ort.DynamicAdvancedSession
+	session   ONNXSession
 	modelPath string
 	logger    *slog.Logger
 
@@ -56,6 +63,8 @@ type InferenceConfig struct {
 	RiskThreshold       float32 // Required, typically 0.85
 	ConfidenceThreshold float32 // Required, typically 0.50
 	Logger              *slog.Logger
+	// Session allows injecting a mock session for testing.
+	Session ONNXSession
 }
 
 // NewONNXInference creates a new ONNX inference engine.
@@ -80,10 +89,16 @@ func NewONNXInference(cfg InferenceConfig) (*ONNXInference, error) {
 		logger:              logger,
 		riskThreshold:       riskThreshold,
 		confidenceThreshold: confidenceThreshold,
+		session:             cfg.Session,
+	}
+
+	// If a session was injected (testing), skip ORT initialization and loading
+	if cfg.Session != nil {
+		return inf, nil
 	}
 
 	// Initialize ONNX runtime
-	setSharedLibraryPath()
+	SetSharedLibraryPath()
 	if err := ort.InitializeEnvironment(); err != nil {
 		return nil, fmt.Errorf("failed to initialize ONNX runtime: %w", err)
 	}
@@ -240,7 +255,7 @@ func (inf *ONNXInference) Close() error {
 	return ort.DestroyEnvironment()
 }
 
-func setSharedLibraryPath() {
+func SetSharedLibraryPath() {
 	paths := []string{}
 	if env := os.Getenv("ORT_SHARED_LIBRARY_PATH"); env != "" {
 		paths = append(paths, env)
@@ -248,18 +263,55 @@ func setSharedLibraryPath() {
 	if env := os.Getenv("SPOTVORTEX_ONNXRUNTIME_PATH"); env != "" {
 		paths = append(paths, env)
 	}
+	paths = appendVenvONNXRuntimeCandidates(paths)
 	paths = append(paths, []string{
 		"/opt/homebrew/lib/libonnxruntime.dylib",
-		"vortex/.venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime.1.23.2.dylib",
-		"/Users/pradeepsingh/code/tools/spot-vortex/tests/e2e/.venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime.1.23.2.dylib",
-		"onnxruntime",
+		"/usr/local/lib/libonnxruntime.dylib",
+		"/usr/lib/libonnxruntime.so",
 	}...)
+	seen := map[string]struct{}{}
 	for _, p := range paths {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
 		if _, err := os.Stat(p); err == nil {
 			ort.SetSharedLibraryPath(p)
 			return
 		}
 	}
+	ort.SetSharedLibraryPath("onnxruntime")
+}
+
+func appendVenvONNXRuntimeCandidates(paths []string) []string {
+	basePatterns := []string{
+		".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"vortex/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"vortex/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"spot-vortex/tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"spot-vortex/tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+	}
+	prefixes := []string{
+		".",
+		"..",
+		"../..",
+		"../../..",
+		"../../../..",
+	}
+	for _, prefix := range prefixes {
+		for _, base := range basePatterns {
+			pattern := filepath.Join(prefix, base)
+			matches, err := filepath.Glob(pattern)
+			if err != nil {
+				continue
+			}
+			paths = append(paths, matches...)
+		}
+	}
+	return paths
 }
 
 func boolToFloat32(b bool) float32 {

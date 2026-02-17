@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/config"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/config"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
 )
 
 func TestApplyTargetSpotRatioWithRuntimeKillSwitch(t *testing.T) {

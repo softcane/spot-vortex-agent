@@ -17,7 +17,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -318,8 +318,38 @@ func TestFullInferencePipeline(t *testing.T) {
 
 // getONNXRuntimeLibPath returns a common path for libonnxruntime.
 func getONNXRuntimeLibPath() string {
+	if env := os.Getenv("ORT_SHARED_LIBRARY_PATH"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	if env := os.Getenv("SPOTVORTEX_ONNXRUNTIME_PATH"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	patterns := []string{
+		".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"../../tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"../../tests/e2e/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+		"../../vortex/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.dylib",
+		"../../vortex/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime*.so*",
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, p := range matches {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	paths := []string{
-		"/Users/pradeepsingh/code/tools/spot-vortex/tests/e2e/.venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime.1.23.2.dylib",
 		"/opt/homebrew/lib/libonnxruntime.dylib",
 		"/usr/local/lib/libonnxruntime.dylib",
 		"/usr/lib/libonnxruntime.so",

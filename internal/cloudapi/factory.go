@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/cloudapi/aws"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/cloudapi/gcp"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi/aws"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi/gcp"
 )
 
 // PriceProvider defines the interface for spot price retrieval.

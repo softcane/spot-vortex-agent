@@ -35,8 +35,8 @@ func Execute() error {
 
 func init() {
 	// Global persistent flags
-	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", false,
-		"Log actions without executing them (safe mode)")
+	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "n", true,
+		"Shadow mode: log actions without executing them (default: true, set --dry-run=false for active mode)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
 		"Enable verbose logging output")
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "",

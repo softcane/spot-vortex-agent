@@ -245,3 +245,65 @@ func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 		t.Fatal("expected deterministic policy helper to return true")
 	}
 }
+
+func TestLoadRuntimeConfig_InvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "invalid.json")
+
+	if err := os.WriteFile(configPath, []byte("{invalid-json"), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_, err := LoadRuntimeConfig(configPath)
+	if err == nil {
+		t.Error("expected error loading invalid json, got nil")
+	}
+}
+
+func TestLoadRuntimeConfig_MissingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "missing.json")
+
+	_, err := LoadRuntimeConfig(configPath)
+	if err == nil {
+		t.Error("expected error loading missing file, got nil")
+	}
+}
+
+func TestNormalizeBoundaries(t *testing.T) {
+	tests := []struct {
+		input []float64
+		want  []float64
+	}{
+		{[]float64{10, 5, 20}, []float64{5, 10, 20}},
+		{[]float64{5, 5, 10}, []float64{5, 10}},
+		{[]float64{-5, 10}, []float64{0, 10}},
+		{nil, nil},
+		{[]float64{}, nil},
+	}
+
+	for _, tc := range tests {
+		got := normalizeBoundaries(tc.input)
+		if len(got) != len(tc.want) {
+			t.Errorf("normalizeBoundaries(%v): got %v, want %v", tc.input, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("normalizeBoundaries(%v): got %v, want %v", tc.input, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+func TestFeatureBuckets_Empty(t *testing.T) {
+	b := FeatureBuckets{}
+	if !b.empty() {
+		t.Error("expected empty buckets to return true")
+	}
+	b.PodStartupTimeSeconds = []float64{1}
+	if b.empty() {
+		t.Error("expected non-empty buckets to return false")
+	}
+}

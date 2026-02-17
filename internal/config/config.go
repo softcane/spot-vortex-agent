@@ -1,5 +1,4 @@
 // Package config provides configuration loading for SpotVortex.
-// All config values are loaded from file - NO hardcoded defaults.
 package config
 
 import (
@@ -11,14 +10,14 @@ import (
 )
 
 // Config holds all SpotVortex configuration.
-// All fields are required - no defaults embedded in code.
 type Config struct {
-	Controller ControllerConfig `yaml:"controller"`
-	Inference  InferenceConfig  `yaml:"inference"`
-	Prometheus PrometheusConfig `yaml:"prometheus"`
-	Karpenter  KarpenterConfig  `yaml:"karpenter"`
-	AWS        AWSConfig        `yaml:"aws"`
-	GCP        GCPConfig        `yaml:"gcp"`
+	Controller  ControllerConfig  `yaml:"controller"`
+	Inference   InferenceConfig   `yaml:"inference"`
+	Prometheus  PrometheusConfig  `yaml:"prometheus"`
+	Karpenter   KarpenterConfig   `yaml:"karpenter"`
+	Autoscaling AutoscalingConfig `yaml:"autoscaling"`
+	AWS         AWSConfig         `yaml:"aws"`
+	GCP         GCPConfig         `yaml:"gcp"`
 }
 
 // KarpenterConfig configures Karpenter integration per PRODUCTION_FLOW_EKS_KARPENTER.md.
@@ -117,17 +116,67 @@ type PrometheusConfig struct {
 	TimeoutSeconds int    `yaml:"timeoutSeconds"`
 }
 
-// AWSConfig configures AWS spot price scraping.
+// AWSConfig configures AWS spot-price provider settings.
 type AWSConfig struct {
-	Region            string   `yaml:"region"`
-	InstanceTypes     []string `yaml:"instanceTypes"`
+	Region string `yaml:"region"`
+	// Optional catalog hints for pricing workflows. Not used for model-scope gating.
+	InstanceTypes []string `yaml:"instanceTypes"`
+	// Optional catalog hints for pricing workflows. Not used for model-scope gating.
 	AvailabilityZones []string `yaml:"availabilityZones"`
+}
+
+// AutoscalingConfig configures ASG-based capacity management for Cluster Autoscaler
+// and EKS Managed Nodegroup integrations.
+//
+// Per integration_strategy.md Section 4: Both CA and MNG rely on Auto Scaling Groups,
+// so they share the same "Twin ASG" swap workflow (Scale-Wait-Drain).
+type AutoscalingConfig struct {
+	// Enabled enables ASG-based capacity management (for CA and MNG nodes).
+	// When true, SpotVortex will manage Twin ASG pairs for spot/OD swaps.
+	Enabled bool `yaml:"enabled"`
+
+	// DiscoveryTags defines the ASG tag keys used to discover twin ASG pairs.
+	DiscoveryTags ASGDiscoveryTags `yaml:"discoveryTags"`
+
+	// NodeReadyTimeoutSeconds is how long to wait for a new node to become Ready
+	// after scaling up a twin ASG. Default: 300 (5 minutes).
+	NodeReadyTimeoutSeconds int `yaml:"nodeReadyTimeoutSeconds"`
+
+	// PollIntervalSeconds is how often to poll for new node readiness. Default: 10.
+	PollIntervalSeconds int `yaml:"pollIntervalSeconds"`
+}
+
+// ASGDiscoveryTags defines the tag keys used to discover twin ASG pairs.
+type ASGDiscoveryTags struct {
+	// Pool is the tag key for workload pool name. Default: "spotvortex.io/pool".
+	Pool string `yaml:"pool"`
+
+	// CapacityType is the tag key for capacity type (spot/on-demand).
+	// Default: "spotvortex.io/capacity-type".
+	CapacityType string `yaml:"type"`
+}
+
+// NodeReadyTimeout returns the node ready timeout as a duration.
+func (a *AutoscalingConfig) NodeReadyTimeout() time.Duration {
+	if a.NodeReadyTimeoutSeconds <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(a.NodeReadyTimeoutSeconds) * time.Second
+}
+
+// PollInterval returns the poll interval as a duration.
+func (a *AutoscalingConfig) PollInterval() time.Duration {
+	if a.PollIntervalSeconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(a.PollIntervalSeconds) * time.Second
 }
 
 // GCPConfig configures GCP preemptible pricing.
 type GCPConfig struct {
-	ProjectID    string   `yaml:"projectId"`
-	Region       string   `yaml:"region"`
+	ProjectID string `yaml:"projectId"`
+	Region    string `yaml:"region"`
+	// Optional catalog hints for pricing workflows. Not used for model-scope gating.
 	MachineTypes []string `yaml:"machineTypes"`
 }
 
@@ -151,7 +200,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks all required fields are set.
+// Validate checks required fields and applies safe defaults for optional fields.
 func (c *Config) Validate() error {
 	// Controller validation
 	if c.Controller.RiskThreshold <= 0 || c.Controller.RiskThreshold > 1 {
@@ -183,15 +232,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("prometheus.url is required")
 	}
 
-	// AWS validation
+	// AWS defaults/validation.
+	// Region is only used for AWS price-provider fallback. Keep a safe default.
 	if c.AWS.Region == "" {
-		return fmt.Errorf("aws.region is required")
+		c.AWS.Region = "us-east-1"
 	}
-	if len(c.AWS.InstanceTypes) == 0 {
-		return fmt.Errorf("aws.instanceTypes cannot be empty")
-	}
-	if len(c.AWS.AvailabilityZones) == 0 {
-		return fmt.Errorf("aws.availabilityZones cannot be empty")
+
+	// Autoscaling validation - apply defaults for optional fields
+	if c.Autoscaling.Enabled {
+		if c.Autoscaling.DiscoveryTags.Pool == "" {
+			c.Autoscaling.DiscoveryTags.Pool = "spotvortex.io/pool"
+		}
+		if c.Autoscaling.DiscoveryTags.CapacityType == "" {
+			c.Autoscaling.DiscoveryTags.CapacityType = "spotvortex.io/capacity-type"
+		}
+		if c.Autoscaling.NodeReadyTimeoutSeconds == 0 {
+			c.Autoscaling.NodeReadyTimeoutSeconds = 300
+		}
+		if c.Autoscaling.PollIntervalSeconds == 0 {
+			c.Autoscaling.PollIntervalSeconds = 10
+		}
 	}
 
 	// Karpenter validation - apply defaults for optional fields

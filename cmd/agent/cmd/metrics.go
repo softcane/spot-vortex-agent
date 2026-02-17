@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	"github.com/spf13/cobra"
 )
 

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 )
 
 // NodeSavings represents potential savings for a single node.

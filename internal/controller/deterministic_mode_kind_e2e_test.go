@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
-	svmetrics "github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
+	svmetrics "github.com/softcane/spot-vortex-agent/internal/metrics"
 	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -31,7 +32,6 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	}
 
 	t.Setenv("SPOTVORTEX_METRICS_MODE", "synthetic")
-	t.Setenv("SPOTVORTEX_PRICE_MODE", "synthetic")
 	t.Cleanup(writeRuntimeConfigForTest(t, `{
   "risk_multiplier": 1.0,
   "min_spot_ratio": 0.0,
@@ -75,6 +75,11 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 		Logger:             slog.Default(),
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "failed to initialize ONNX runtime") ||
+			strings.Contains(err.Error(), "InitializeRuntime() has either not yet been called") ||
+			strings.Contains(err.Error(), "Error loading ONNX shared library") {
+			t.Skipf("skipping deterministic e2e path test: onnxruntime unavailable: %v", err)
+		}
 		t.Fatalf("failed to initialize inference engine: %v", err)
 	}
 	t.Cleanup(func() {
@@ -82,7 +87,14 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	})
 
 	c, err := New(Config{
-		Cloud:               &noopCloudProvider{dryRun: true},
+		Cloud:    &noopCloudProvider{dryRun: true},
+		PriceProvider: &MockPriceProvider{
+			PriceData: cloudapi.SpotPriceData{
+				CurrentPrice:  0.2,
+				OnDemandPrice: 1.0,
+				PriceHistory:  []float64{0.2, 0.2, 0.2},
+			},
+		},
 		K8sClient:           k8sClient,
 		Inference:           infEngine,
 		PrometheusClient:    &svmetrics.Client{},

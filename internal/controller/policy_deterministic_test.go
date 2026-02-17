@@ -3,8 +3,8 @@ package controller
 import (
 	"testing"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/config"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/config"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
 )
 
 func deterministicRuntimeConfig() *config.RuntimeConfig {
@@ -142,7 +142,8 @@ func TestComputeWorkloadSpotCap_CombinesRules(t *testing.T) {
 	state.PriorityScore = 0.95
 	state.OutagePenaltyHours = 100
 
-	cap := computeWorkloadSpotCap(state)
+	evaluator := NewPolicyEvaluator(nil)
+	cap := evaluator.computeWorkloadSpotCap(state)
 	if cap > 0.10 {
 		t.Fatalf("expected strict cap <= 0.10, got %.2f", cap)
 	}

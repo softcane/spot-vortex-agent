@@ -1,0 +1,104 @@
+name: E2E - EKS Anywhere Docker + Cluster Autoscaler
+
+on:
+  workflow_dispatch:
+    inputs:
+      management_cluster_name:
+        description: "EKS Anywhere management cluster name"
+        required: false
+        type: string
+        default: "spotvortex-eksa-mgmt"
+      workload_cluster_name:
+        description: "EKS Anywhere workload cluster name"
+        required: false
+        type: string
+        default: "spotvortex-eksa-ca"
+
+jobs:
+  e2e-eksa-ca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install prerequisites
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+          if ! command -v yq >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+            chmod +x /tmp/yq
+            sudo mv /tmp/yq /usr/local/bin/yq
+          fi
+
+          if ! command -v kind >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+            chmod +x /tmp/kind
+            sudo mv /tmp/kind /usr/local/bin/kind
+          fi
+
+          if ! command -v eksctl >/dev/null 2>&1; then
+            curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" \
+              | tar xz -C /tmp
+            sudo mv /tmp/eksctl /usr/local/bin/eksctl
+          fi
+
+          if ! command -v clusterctl >/dev/null 2>&1; then
+            CLUSTERCTL_URL="$(curl -fsSL https://api.github.com/repos/kubernetes-sigs/cluster-api/releases/latest \
+              | jq -r '.assets[] | select(.name == "clusterctl-linux-amd64") | .browser_download_url')"
+            curl -fsSL "$CLUSTERCTL_URL" -o /tmp/clusterctl
+            chmod +x /tmp/clusterctl
+            sudo mv /tmp/clusterctl /usr/local/bin/clusterctl
+          fi
+
+          if ! command -v eksctl-anywhere >/dev/null 2>&1; then
+            RELEASE_BRANCH="$(curl -fsSL https://anywhere-assets.eks.amazonaws.com/releases/eks-a/manifest.yaml | yq eval -r '.spec.latestVersion' -)"
+            EKS_RELEASE="$(curl -fsSL https://anywhere-assets.eks.amazonaws.com/releases/eks-a/manifest.yaml | yq eval -r ".spec.releases[] | select(.branch==\"$RELEASE_BRANCH\") | .latestVersion" -)"
+            curl -fsSL "https://anywhere-assets.eks.amazonaws.com/releases/eks-a/${EKS_RELEASE}/bin/linux/amd64/eksctl-anywhere" -o /tmp/eksctl-anywhere
+            chmod +x /tmp/eksctl-anywhere
+            sudo mv /tmp/eksctl-anywhere /usr/local/bin/eksctl-anywhere
+          fi
+
+          kind version
+          eksctl version
+          eksctl anywhere version
+          clusterctl version
+
+      - name: Setup EKS Anywhere + Cluster Autoscaler
+        id: setup
+        env:
+          MGMT_CLUSTER_NAME: ${{ inputs.management_cluster_name }}
+          WORKLOAD_CLUSTER_NAME: ${{ inputs.workload_cluster_name }}
+        run: |
+          set -euo pipefail
+
+          chmod +x tests/e2e/setup-eksa-ca.sh
+          SETUP_OUTPUT="$(tests/e2e/setup-eksa-ca.sh)"
+          echo "$SETUP_OUTPUT"
+
+          MGMT_KUBECONFIG="$(echo "$SETUP_OUTPUT" | awk -F= '/^MANAGEMENT_KUBECONFIG=/{print $2}' | tail -n1)"
+          WORKLOAD_KUBECONFIG="$(echo "$SETUP_OUTPUT" | awk -F= '/^WORKLOAD_KUBECONFIG=/{print $2}' | tail -n1)"
+
+          if [[ -z "$MGMT_KUBECONFIG" || -z "$WORKLOAD_KUBECONFIG" ]]; then
+            echo "setup-eksa-ca.sh did not emit kubeconfig paths" >&2
+            exit 1
+          fi
+
+          echo "management_kubeconfig=$MGMT_KUBECONFIG" >> "$GITHUB_OUTPUT"
+          echo "workload_kubeconfig=$WORKLOAD_KUBECONFIG" >> "$GITHUB_OUTPUT"
+
+      - name: Run EKS Anywhere + CA suite
+        env:
+          KUBECONFIG: ${{ steps.setup.outputs.workload_kubeconfig }}
+          SPOTVORTEX_E2E_SUITE: eksa-ca
+        run: |
+          go test -v ./tests/e2e -run 'TestEKSAnywhereCA_' -count=1

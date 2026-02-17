@@ -34,6 +34,14 @@ jobs:
         run: |
           go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
 
+      - name: Fault injection tests (required)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go test -count=1 ./internal/capacity -run 'TestKarpenterManager_PrepareSwap_(MissingNodePools|PatchDenied|PartialPatchSuccessStillReady)'
+          go test -count=1 ./internal/controller -run 'TestDrain_AbortsWhenPDBBlocks'
+
       - name: Setup Helm
         uses: azure/setup-helm@v4
 

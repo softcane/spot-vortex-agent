@@ -34,3 +34,19 @@ nodes:
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "karpenter.sh/capacity-type=on-demand,karpenter.sh/nodepool=default,spotvortex.io/managed=true,node.kubernetes.io/instance-type=m5.large,topology.kubernetes.io/zone=us-east-1a"
+  # Cluster Autoscaler node (no Karpenter labels, explicit spotvortex.io/manager=cluster-autoscaler)
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "spotvortex.io/manager=cluster-autoscaler,spotvortex.io/managed=true,spotvortex.io/pool=ca-pool,node.kubernetes.io/instance-type=c5.xlarge,topology.kubernetes.io/zone=us-east-1a"
+  # EKS Managed Nodegroup node (has eks.amazonaws.com/nodegroup label)
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "eks.amazonaws.com/nodegroup=my-mng,spotvortex.io/managed=true,spotvortex.io/pool=mng-pool,node.kubernetes.io/instance-type=m5.xlarge,topology.kubernetes.io/zone=us-east-1b"

@@ -25,22 +25,13 @@ data:
 
     aws:
       region: {{ .Values.aws.region | quote }}
-      instanceTypes:
-{{- range .Values.aws.instanceTypes }}
-        - {{ . | quote }}
-{{- end }}
-      availabilityZones:
-{{- range .Values.aws.availabilityZones }}
-        - {{ . | quote }}
-{{- end }}
+      instanceTypes: {{ .Values.aws.instanceTypes | toJson }}
+      availabilityZones: {{ .Values.aws.availabilityZones | toJson }}
 
     gcp:
       projectId: {{ .Values.gcp.projectId | quote }}
       region: {{ .Values.gcp.region | quote }}
-      machineTypes:
-{{- range .Values.gcp.machineTypes }}
-        - {{ . | quote }}
-{{- end }}
+      machineTypes: {{ .Values.gcp.machineTypes | toJson }}
 
     karpenter:
       enabled: {{ .Values.karpenter.enabled }}

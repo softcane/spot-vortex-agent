@@ -64,6 +64,8 @@ type InferenceEngine struct {
 type EngineConfig struct {
 	TFTModelPath         string
 	RLModelPath          string
+	PySRCalibrationPath  string // Optional: defaults to models/pysr/calibration_equation.txt
+	PySRFusionPath       string // Optional: defaults to models/pysr/context_equation.txt
 	ModelManifestPath    string
 	ExpectedCloud        string
 	RequireModelContract bool
@@ -79,7 +81,7 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 	}
 
 	// Initialize ONNX runtime
-	setSharedLibraryPath()
+	SetSharedLibraryPath()
 	if err := ort.InitializeEnvironment(); err != nil {
 		logger.Warn("ONNX Runtime already initialized or failed", "error", err)
 	}
@@ -111,10 +113,19 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 		return nil, fmt.Errorf("failed to load RL model: %w", err)
 	}
 
+	pysrCalibPath := cfg.PySRCalibrationPath
+	if pysrCalibPath == "" {
+		pysrCalibPath = "models/pysr/calibration_equation.txt"
+	}
+	pysrFusionPath := cfg.PySRFusionPath
+	if pysrFusionPath == "" {
+		pysrFusionPath = "models/pysr/context_equation.txt"
+	}
+
 	pysrEngine := NewPySREngine(
 		logger,
-		"models/pysr/calibration_equation.txt",
-		"models/pysr/context_equation.txt",
+		pysrCalibPath,
+		pysrFusionPath,
 	)
 
 	manifestPath := strings.TrimSpace(cfg.ModelManifestPath)

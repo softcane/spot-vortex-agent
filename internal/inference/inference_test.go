@@ -4,39 +4,81 @@ package inference
 
 import (
 	"context"
-	"os"
 	"testing"
+
+	ort "github.com/yalue/onnxruntime_go"
 )
 
-// TestONNXInference_RealModel tests inference with a real ONNX model.
-// REQUIRES: ONNX_MODEL_PATH environment variable set to valid model.
-func TestONNXInference_RealModel(t *testing.T) {
-	modelPath := os.Getenv("ONNX_MODEL_PATH")
-	if modelPath == "" {
-		t.Skip("ONNX_MODEL_PATH not set - skipping real model test")
+// MockSession implements ONNXSession for testing.
+type MockSession struct {
+	Prediction float32
+	Confidence float32
+	Err        error
+}
+
+func (m *MockSession) Run(inputs []ort.ArbitraryTensor, outputs []ort.ArbitraryTensor) error {
+	if m.Err != nil {
+		return m.Err
+	}
+	// Write outputs
+	// Output 0: Probability
+	// Output 1: Confidence
+	// We assume outputs are *ort.Tensor[float32], which exposes GetHeader().GetData() ...
+	// Wait, ort.ArbitraryTensor interface doesn't easily allow writing data without casting.
+	// We need to cast to *ort.Tensor[float32].
+
+	// IMPORTANT: In production code we use NewTensor which returns *Tensor[T].
+	// The Run signature accepts []ArbitraryTensor.
+
+	// Helper to write float32 to tensor
+	write := func(idx int, val float32) {
+		if idx >= len(outputs) {
+			return
+		}
+		t, ok := outputs[idx].(*ort.Tensor[float32])
+		if !ok {
+			return
+		}
+		data := t.GetData()
+		if len(data) > 0 {
+			data[0] = val
+		}
+	}
+
+	write(0, m.Prediction)
+	write(1, m.Confidence)
+
+	return nil
+}
+
+func (m *MockSession) Destroy() error {
+	return nil
+}
+
+func TestONNXInference_Mocked(t *testing.T) {
+	// Initialize ORT for tensor creation
+	SetSharedLibraryPath()
+	_ = ort.InitializeEnvironment() // Ignore error in case it's already init or fails (we'll see failure in NewTensor)
+
+	mockSession := &MockSession{
+		Prediction: 0.75, // Risk > 0.5 -> drain
+		Confidence: 0.90, // High confidence
 	}
 
 	inf, err := NewONNXInference(InferenceConfig{
-		ModelPath:           modelPath,
 		RiskThreshold:       0.85,
 		ConfidenceThreshold: 0.50,
+		Session:             mockSession,
 	})
 	if err != nil {
 		t.Fatalf("failed to create inference engine: %v", err)
 	}
-	defer inf.Close()
 
 	// Test with realistic input
 	input := PredictionInput{
-		NodeID:       "test-node-001",
-		Zone:         "us-east-1a",
-		InstanceType: "m5.4xlarge",
-		SpotPrice:    0.042,
-		CPUUsage:     0.73,
-		MemoryUsage:  0.65,
-		Hour:         14,
-		DayOfWeek:    2,
-		IsWeekend:    false,
+		NodeID:   "test-node-001",
+		Zone:     "us-east-1a",
+		CPUUsage: 0.73,
 	}
 
 	output, err := inf.Predict(context.Background(), input)
@@ -44,58 +86,36 @@ func TestONNXInference_RealModel(t *testing.T) {
 		t.Fatalf("prediction failed: %v", err)
 	}
 
-	// Validate output ranges
-	if output.InterruptionProbability < 0 || output.InterruptionProbability > 1 {
-		t.Errorf("probability out of range: %v", output.InterruptionProbability)
+	// Validate output
+	if output.InterruptionProbability != 0.75 {
+		t.Errorf("expected prob 0.75, got %v", output.InterruptionProbability)
 	}
-
-	if output.Confidence < 0 || output.Confidence > 1 {
-		t.Errorf("confidence out of range: %v", output.Confidence)
+	if output.Confidence != 0.90 {
+		t.Errorf("expected conf 0.90, got %v", output.Confidence)
 	}
-
-	if output.NodeID != input.NodeID {
-		t.Errorf("node ID mismatch: got %s, want %s", output.NodeID, input.NodeID)
+	if output.RecommendedAction != "drain" {
+		t.Errorf("expected action 'drain', got %s", output.RecommendedAction)
 	}
-
-	validActions := map[string]bool{
-		"hold":               true,
-		"drain":              true,
-		"immediate_drain":    true,
-		"fallback_on_demand": true,
-	}
-	if !validActions[output.RecommendedAction] {
-		t.Errorf("invalid recommended action: %s", output.RecommendedAction)
-	}
-
-	t.Logf("Prediction result: prob=%.4f, conf=%.4f, action=%s",
-		output.InterruptionProbability,
-		output.Confidence,
-		output.RecommendedAction,
-	)
 }
 
-// TestONNXInference_BatchPrediction tests batch inference with real model.
-func TestONNXInference_BatchPrediction(t *testing.T) {
-	modelPath := os.Getenv("ONNX_MODEL_PATH")
-	if modelPath == "" {
-		t.Skip("ONNX_MODEL_PATH not set - skipping real model test")
+func TestONNXInference_BatchMocked(t *testing.T) {
+	mockSession := &MockSession{
+		Prediction: 0.95, // Immediate drain
+		Confidence: 0.99,
 	}
 
 	inf, err := NewONNXInference(InferenceConfig{
-		ModelPath:           modelPath,
 		RiskThreshold:       0.85,
 		ConfidenceThreshold: 0.50,
+		Session:             mockSession,
 	})
 	if err != nil {
 		t.Fatalf("failed to create inference engine: %v", err)
 	}
-	defer inf.Close()
 
-	// Test batch of inputs representing different node scenarios
 	inputs := []PredictionInput{
-		{NodeID: "node-1", Zone: "us-east-1a", SpotPrice: 0.042, CPUUsage: 0.73},
-		{NodeID: "node-2", Zone: "us-east-1b", SpotPrice: 0.038, CPUUsage: 0.45},
-		{NodeID: "node-3", Zone: "us-east-1c", SpotPrice: 0.085, CPUUsage: 0.91}, // High price/usage
+		{NodeID: "node-1"},
+		{NodeID: "node-2"},
 	}
 
 	outputs, err := inf.PredictBatch(context.Background(), inputs)
@@ -103,16 +123,14 @@ func TestONNXInference_BatchPrediction(t *testing.T) {
 		t.Fatalf("batch prediction failed: %v", err)
 	}
 
-	if len(outputs) != len(inputs) {
-		t.Fatalf("output count mismatch: got %d, want %d", len(outputs), len(inputs))
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 outputs, got %d", len(outputs))
 	}
 
-	for i, out := range outputs {
-		if out.NodeID != inputs[i].NodeID {
-			t.Errorf("node %d: ID mismatch", i)
+	for _, out := range outputs {
+		if out.RecommendedAction != "immediate_drain" {
+			t.Errorf("expected 'immediate_drain', got %s", out.RecommendedAction)
 		}
-		t.Logf("Node %s: prob=%.4f, conf=%.4f, action=%s",
-			out.NodeID, out.InterruptionProbability, out.Confidence, out.RecommendedAction)
 	}
 }
 

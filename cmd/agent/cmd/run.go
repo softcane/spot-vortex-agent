@@ -12,11 +12,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/pradeepsingh/spot-vortex-agent/internal/cloudapi"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/config"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/controller"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/inference"
-	"github.com/pradeepsingh/spot-vortex-agent/internal/metrics"
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
+	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
+	"github.com/softcane/spot-vortex-agent/internal/config"
+	"github.com/softcane/spot-vortex-agent/internal/controller"
+	"github.com/softcane/spot-vortex-agent/internal/inference"
+	"github.com/softcane/spot-vortex-agent/internal/karpenter"
+	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -93,6 +95,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		} else {
 			slog.Info("Karpenter integration enabled")
 		}
+
+		// Validate Karpenter version: require v1, reject v1beta1-only clusters
+		if err := karpenter.ValidateKarpenterVersion(ctx, k8sClient, slog.Default()); err != nil {
+			return fmt.Errorf("karpenter version check failed: %w", err)
+		}
 	}
 
 	// 3. Initialize Prometheus Client
@@ -119,20 +126,33 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	defer infEngine.Close()
 
-	// 5. Initialize Cloud Provider
-	// For production, we use the factory to detect and create the provider
+	// 5. Initialize Cloud Provider (required for shadow mode)
 	var priceProvider cloudapi.PriceProvider
-	if useSyntheticPrices {
-		slog.Warn("synthetic price mode enabled; skipping cloud price provider detection")
-	} else {
-		priceProvider, _, err = cloudapi.NewAutoDetectedPriceProvider(ctx, slog.Default())
+	priceProvider, _, err = cloudapi.NewAutoDetectedPriceProvider(ctx, slog.Default())
+	if err != nil {
+		slog.Warn("failed to auto-detect cloud provider, attempting AWS fallback", "error", err)
+		priceProvider, err = cloudapi.NewAWSPriceProvider(ctx, cfg.AWS.Region, slog.Default())
 		if err != nil {
-			slog.Warn("failed to auto-detect cloud provider, attempting AWS fallback", "error", err)
-			priceProvider, err = cloudapi.NewAWSPriceProvider(ctx, cfg.AWS.Region, slog.Default())
-			if err != nil {
-				slog.Warn("failed to create AWS price provider", "error", err)
-			}
+			return fmt.Errorf("failed to initialize price provider (required for shadow mode): %w", err)
 		}
+	}
+
+	// 5.5. IAM canary: verify credentials work by making a lightweight spot price call.
+	// Use first configured AZ or fall back to region + "a". Real AZs are configured
+	// in values.yaml under aws.availabilityZones.
+	canaryAZ := cfg.AWS.Region + "a"
+	if len(cfg.AWS.AvailabilityZones) > 0 {
+		canaryAZ = cfg.AWS.AvailabilityZones[0]
+	}
+	if _, err := priceProvider.GetSpotPrice(ctx, "m5.large", canaryAZ); err != nil {
+		slog.Warn("IAM canary failed: spot price query returned an error; "+
+			"verify IAM permissions per docs/IAM_PERMISSIONS.md",
+			"error", err,
+			"region", cfg.AWS.Region,
+			"az", canaryAZ,
+		)
+	} else {
+		slog.Info("IAM canary passed: spot price query succeeded", "az", canaryAZ)
 	}
 
 	// Create the safety wrapper
@@ -140,6 +160,21 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		DryRun: IsDryRun(),
 		Logger: slog.Default(),
 	})
+
+	// 5.7. Initialize ASG client for Cluster Autoscaler / Managed Nodegroup integration
+	var asgClient capacity.ASGClient
+	if cfg.Autoscaling.Enabled {
+		realASG, asgErr := capacity.NewAWSASGClient(ctx, capacity.AWSASGClientConfig{
+			Region:         cfg.AWS.Region,
+			PoolTagKey:     cfg.Autoscaling.DiscoveryTags.Pool,
+			CapacityTagKey: cfg.Autoscaling.DiscoveryTags.CapacityType,
+		})
+		if asgErr != nil {
+			return fmt.Errorf("failed to initialize ASG client: %w", asgErr)
+		}
+		asgClient = realASG
+		slog.Info("ASG client initialized", "region", cfg.AWS.Region)
+	}
 
 	// 6. Initialize Controller
 	ctrl, err := controller.New(controller.Config{
@@ -155,6 +190,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		ReconcileInterval:   cfg.Controller.ReconcileInterval(),
 		ConfidenceThreshold: cfg.Controller.ConfidenceThreshold,
 		Karpenter:           cfg.Karpenter,
+		Autoscaling:         cfg.Autoscaling,
+		ASGClient:           asgClient,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create controller: %w", err)

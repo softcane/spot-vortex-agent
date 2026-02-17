@@ -1,14 +1,13 @@
 # SpotVortex Helm values
 
-# Required: API key used by backend integrations.
-apiKey: ""
 
 # Cloud this deployment targets.
 cloud: aws
 
 mode:
-  # If true, controller runs in dry-run mode (no node drains).
-  dryRun: false
+  # Shadow mode (default: true). Runs read-only: logs savings, risk, and recommendations
+  # without executing drains. Set to false for active mode (requires explicit opt-in).
+  dryRun: true
 
 controller:
   riskThreshold: 0.85
@@ -22,6 +21,7 @@ inference:
   tftModelPath: "models/tft.onnx"
   rlModelPath: "models/rl_policy.onnx"
   modelManifestPath: "models/MODEL_MANIFEST.json"
+  # Must match manifest cloud (if set).
   expectedCloud: "aws"
 
 prometheus:
@@ -30,30 +30,27 @@ prometheus:
   timeoutSeconds: 10
 
 aws:
+  # Used by price provider fallback path.
   region: "us-east-1"
-  instanceTypes:
-    - "m5.large"
-    - "m5.xlarge"
-    - "m5.2xlarge"
-    - "c5.large"
-    - "c5.xlarge"
-    - "c5.2xlarge"
-    - "r5.large"
-    - "r5.xlarge"
-  availabilityZones:
-    - "us-east-1a"
-    - "us-east-1b"
-    - "us-east-1c"
-    - "us-east-1d"
+  # Optional catalog hints for pricing workflows (not model-scope enforcement).
+  instanceTypes: []
+  availabilityZones: []
 
 gcp:
   projectId: ""
   region: "us-central1"
-  machineTypes:
-    - "n1-standard-2"
-    - "n1-standard-4"
-    - "n2-standard-2"
-    - "n2-standard-4"
+  # Optional catalog hints for pricing workflows (not model-scope enforcement).
+  machineTypes: []
+
+# Autoscaling (ASG) integration for Cluster Autoscaler and EKS Managed Nodegroups.
+# Per integration_strategy.md Section 4: Twin ASG model.
+autoscaling:
+  enabled: false
+  discoveryTags:
+    pool: "spotvortex.io/pool"
+    type: "spotvortex.io/capacity-type"
+  nodeReadyTimeoutSeconds: 300
+  pollIntervalSeconds: 10
 
 karpenter:
   enabled: true
@@ -96,4 +93,7 @@ rbac:
 serviceAccount:
   create: true
   name: spotvortex
+  # IRSA: uncomment annotations and set your IAM role ARN (see docs/IAM_PERMISSIONS.md)
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/spotvortex-shadow
   annotations: {}
