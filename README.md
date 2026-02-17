@@ -3,11 +3,11 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/softcane/spot-vortex-agent)](https://goreportcard.com/report/github.com/softcane/spot-vortex-agent)
 
-**SpotVortex Agent** is an intelligent, privacy-first Kubernetes operator that optimizes your cluster configurations using Spot instances. By leveraging advanced machine learning models (Temporal Fusion Transformer & Reinforcement Learning), SpotVortex predicts spot instance availability and price fluctuations to steer workloads towards the most cost-effective and reliable nodes.
+**SpotVortex Agent** is an intelligent, privacy-first Kubernetes operator that minimizes cost and maximizes reliability by intelligently managing your cluster configurations by using Spot and On-Demand instances. By leveraging advanced machine learning models, SpotVortex predicts spot instance availability (availability risk scores) and price fluctuations (runtime risk scores) to steer workloads towards the most cost-effective and reliable nodes.
 
 ## Key Features
 
-- **ML-Driven Optimization**: Utilizes embedded ONNX models (TFT & RL) to make real-time, data-driven decisions on node selection.
+- **ML-Driven Optimization**: Utilizes embedded ONNX models to make real-time, data-driven decisions on node selection.
 - **Privacy-First Architecture**: Designed with strict data sovereignty in mind. **Zero** sensitive customer data (pod names, secrets, env vars) leaves your VPC. Only anonymized pricing and signed billing manifests are exported (opt-in).
 - **Safety Guardrails**: Includes a "Guardian" component that enforces Pod Disruption Budgets (PDBs) and prevents unsafe evictions or scaling actions.
 - **High Performance**: Written in Go for low resource footprint and high reliability.
