@@ -2,7 +2,7 @@
 # Multi-stage build for production-ready Go binary with bundled model artifacts.
 # Uses native cross-compilation (xx) to avoid QEMU overhead and hangs.
 
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # Install xx for cross-compilation helpers
 COPY --from=tonistiigi/xx:master / /
@@ -35,7 +35,6 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates curl tar
 
-# Copy binary from builder
 # Copy binary from builder
 COPY --from=builder /app/spotvortex-agent /usr/local/bin/spotvortex-agent
 
