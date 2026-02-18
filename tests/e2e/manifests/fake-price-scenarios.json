@@ -1,0 +1,39 @@
+{
+  "default": {
+    "current_price": 0.2,
+    "on_demand_price": 1.0,
+    "price_history": [0.2, 0.2, 0.2]
+  },
+  "repeat_last": true,
+  "series": {
+    "m5.large:us-east-1a": [
+      {
+        "current_price": 0.22,
+        "on_demand_price": 1.0,
+        "price_history": [0.2, 0.21, 0.22]
+      },
+      {
+        "current_price": 0.95,
+        "on_demand_price": 1.0,
+        "price_history": [0.22, 0.5, 0.95]
+      },
+      {
+        "current_price": 0.28,
+        "on_demand_price": 1.0,
+        "price_history": [0.95, 0.6, 0.28]
+      }
+    ],
+    "r6i.large:us-east-1a": [
+      {
+        "error": "simulated throttling"
+      }
+    ],
+    "*:us-west-2a": [
+      {
+        "current_price": 0.4,
+        "on_demand_price": 1.2,
+        "price_history": [0.39, 0.4]
+      }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -11,9 +12,17 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +31,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Go test (non-e2e)
         run: make test-unit
@@ -38,19 +48,17 @@ jobs:
       - name: Docker build
         run: make docker-build
 
-  e2e-kind:
-    #if: github.event_name == 'workflow_dispatch'
+  e2e-kind-model:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.model_bundle_url != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fetch model bundle (optional)
+      - name: Fetch model bundle
         run: |
-          if [[ -z "${{ inputs.model_bundle_url }}" ]]; then
-            echo "No model bundle URL provided. Skipping e2e."
-            exit 0
-          fi
+          set -euo pipefail
           mkdir -p models
           curl -fsSL "${{ inputs.model_bundle_url }}" -o /tmp/model_bundle.tgz
           tar -xzf /tmp/model_bundle.tgz -C .
@@ -59,6 +67,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Setup Kind
         uses: helm/kind-action@v1.12.0
@@ -66,5 +75,4 @@ jobs:
           cluster_name: spotvortex-e2e
 
       - name: Run e2e inference test
-        if: ${{ inputs.model_bundle_url != '' }}
         run: go test -v ./tests/e2e -run TestFullInferencePipeline -count=1

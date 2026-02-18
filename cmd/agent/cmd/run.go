@@ -126,33 +126,33 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	defer infEngine.Close()
 
-	// 5. Initialize Cloud Provider (required for shadow mode)
-	var priceProvider cloudapi.PriceProvider
-	priceProvider, _, err = cloudapi.NewAutoDetectedPriceProvider(ctx, slog.Default())
+	// 5. Initialize Price Provider (required for inference market telemetry).
+	priceProviderSelection, err := resolveRuntimePriceProvider(ctx, cfg, slog.Default(), IsDryRun())
 	if err != nil {
-		slog.Warn("failed to auto-detect cloud provider, attempting AWS fallback", "error", err)
-		priceProvider, err = cloudapi.NewAWSPriceProvider(ctx, cfg.AWS.Region, slog.Default())
-		if err != nil {
-			return fmt.Errorf("failed to initialize price provider (required for shadow mode): %w", err)
-		}
+		return fmt.Errorf("failed to initialize price provider (required for shadow mode): %w", err)
 	}
+	priceProvider := priceProviderSelection.provider
 
-	// 5.5. IAM canary: verify credentials work by making a lightweight spot price call.
-	// Use first configured AZ or fall back to region + "a". Real AZs are configured
-	// in values.yaml under aws.availabilityZones.
-	canaryAZ := cfg.AWS.Region + "a"
-	if len(cfg.AWS.AvailabilityZones) > 0 {
-		canaryAZ = cfg.AWS.AvailabilityZones[0]
-	}
-	if _, err := priceProvider.GetSpotPrice(ctx, "m5.large", canaryAZ); err != nil {
-		slog.Warn("IAM canary failed: spot price query returned an error; "+
-			"verify IAM permissions per docs/IAM_PERMISSIONS.md",
-			"error", err,
-			"region", cfg.AWS.Region,
-			"az", canaryAZ,
-		)
+	// 5.5. IAM canary for real providers only.
+	if !priceProviderSelection.isFake {
+		// Use first configured AZ or fall back to region + "a". Real AZs are configured
+		// in values.yaml under aws.availabilityZones.
+		canaryAZ := cfg.AWS.Region + "a"
+		if len(cfg.AWS.AvailabilityZones) > 0 {
+			canaryAZ = cfg.AWS.AvailabilityZones[0]
+		}
+		if _, err := priceProvider.GetSpotPrice(ctx, "m5.large", canaryAZ); err != nil {
+			slog.Warn("IAM canary failed: spot price query returned an error; "+
+				"verify IAM permissions per docs/IAM_PERMISSIONS.md",
+				"error", err,
+				"region", cfg.AWS.Region,
+				"az", canaryAZ,
+			)
+		} else {
+			slog.Info("IAM canary passed: spot price query succeeded", "az", canaryAZ)
+		}
 	} else {
-		slog.Info("IAM canary passed: spot price query succeeded", "az", canaryAZ)
+		slog.Info("skipping IAM canary because fake price provider is active")
 	}
 
 	// Create the safety wrapper

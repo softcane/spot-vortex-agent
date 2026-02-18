@@ -76,6 +76,13 @@ docker build -t spotvortex-agent:local .
 go test -v ./tests/e2e -run TestFullInferencePipeline -count=1
 ```
 
+**Deterministic Local Spot Price Simulation (Test-Only):**
+```bash
+SPOTVORTEX_E2E_SUITE=karpenter-local \
+SPOTVORTEX_TEST_PRICE_PROVIDER_FILE=tests/e2e/manifests/fake-price-scenarios.json \
+go test -v ./tests/e2e -run 'TestKarpenterLocal_FakePriceProvider_' -count=1
+```
+
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit issues and pull requests.

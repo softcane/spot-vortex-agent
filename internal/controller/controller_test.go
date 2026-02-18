@@ -17,6 +17,7 @@ import (
 	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
@@ -453,88 +454,137 @@ func TestController_ExecuteAction(t *testing.T) {
 // TestBatchSteerKarpenterWeights covers the batch steering logic
 func TestBatchSteerKarpenterWeights(t *testing.T) {
 	k8sClient := k8sfake.NewSimpleClientset()
-	dynClient := fake.NewSimpleDynamicClient(runtime.NewScheme()) // Basic fake
+	dynClient := fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		makeTestNodePool("general-spot", 50),
+		makeTestNodePool("general-od", 50),
+	)
 	logger := slog.Default()
 
-	cfg := Config{
-		K8sClient:     k8sClient,
-		DynamicClient: dynClient,
-		Logger:        logger,
-		Karpenter: config.KarpenterConfig{
-			Enabled:                true,
-			SpotNodePoolSuffix:     "-spot",
-			OnDemandNodePoolSuffix: "-od",
-			SpotWeight:             80,
-			OnDemandWeight:         20,
-		},
-	}
-
-	// Initialize struct manually to skip New() validation if needed,
-	// but here we want nodePoolMgr initialized.
 	mgr := karpenter.NewNodePoolManager(dynClient, logger)
-
 	ctrl := &Controller{
-		k8s:              k8sClient,
-		dynamicClient:    dynClient,
-		logger:           logger,
-		karpenterCfg:     cfg.Karpenter,
+		k8s:           k8sClient,
+		dynamicClient: dynClient,
+		logger:        logger,
+		karpenterCfg: config.KarpenterConfig{
+			Enabled:                     true,
+			SpotNodePoolSuffix:          "-spot",
+			OnDemandNodePoolSuffix:      "-od",
+			SpotWeight:                  80,
+			OnDemandWeight:              20,
+			WeightChangeCooldownSeconds: 1,
+		},
 		nodePoolMgr:      mgr,
 		lastWeightChange: make(map[string]time.Time),
 	}
 
-	// Create a node with workload pool label
+	// Create a node with workload pool label. All actions below route through this node.
 	createNode(k8sClient, "n1", "spot", "us-east-1a", "m5.large")
-	node, _ := k8sClient.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	node, err := k8sClient.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("failed to get test node: %v", err)
+	}
 	node.Labels[collector.WorkloadPoolLabel] = "general"
-	k8sClient.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-
-	// Create assessments
-	// Case 1: Majority wants INCREASE -> Favor Spot
-	nodes := []NodeAssessment{
-		{NodeID: "n1", Action: inference.ActionIncrease10}, // Vote Increase
-		{NodeID: "n1", Action: inference.ActionIncrease30}, // Vote Increase
-	}
-	// Note: We used n1 twice, but logic aggregates by workload pool.
-	// Since both "resolve" to pool "general", it should count 2 votes for spot.
-
-	// We can't verify actual Patch calls with simple fake client easily (it doesn't record actions nicely exposed?)
-	// But we can verify no error is returned.
-
-	// To truly verify, we'd need to inspect Actions() on fake client.
-
-	ctrl.batchSteerKarpenterWeights(context.Background(), nodes)
-
-	// Check actions on dynClient
-	actions := dynClient.Actions()
-	if len(actions) == 0 {
-		t.Error("expected patch actions, got 0")
+	if _, err := k8sClient.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("failed to label test node: %v", err)
 	}
 
-	foundPatch := false
-	for _, action := range actions {
-		if action.GetVerb() == "patch" && action.GetResource().Resource == "nodepools" {
-			foundPatch = true
-			break
-		}
+	cases := []struct {
+		name        string
+		assessments []NodeAssessment
+		wantSpot    int32
+		wantOD      int32
+	}{
+		{
+			name: "increase actions favor spot",
+			assessments: []NodeAssessment{
+				{NodeID: "n1", Action: inference.ActionIncrease10},
+				{NodeID: "n1", Action: inference.ActionIncrease30},
+			},
+			wantSpot: 80,
+			wantOD:   20,
+		},
+		{
+			name: "decrease actions favor on-demand",
+			assessments: []NodeAssessment{
+				{NodeID: "n1", Action: inference.ActionDecrease10},
+				{NodeID: "n1", Action: inference.ActionDecrease30},
+			},
+			wantSpot: 20,
+			wantOD:   80,
+		},
+		{
+			name: "emergency action favors on-demand",
+			assessments: []NodeAssessment{
+				{NodeID: "n1", Action: inference.ActionEmergencyExit},
+			},
+			wantSpot: 20,
+			wantOD:   80,
+		},
 	}
-	if !foundPatch {
-		t.Error("expected at least one patch action on nodepools")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl.historyLock.Lock()
+			ctrl.lastWeightChange["general"] = time.Now().Add(-2 * time.Minute)
+			ctrl.historyLock.Unlock()
+
+			dynClient.ClearActions()
+			ctrl.batchSteerKarpenterWeights(context.Background(), tc.assessments)
+
+			actions := dynClient.Actions()
+			if len(actions) == 0 {
+				t.Fatal("expected nodepool patch actions, got none")
+			}
+
+			foundPatch := false
+			for _, action := range actions {
+				if action.GetVerb() == "patch" && action.GetResource().Resource == "nodepools" {
+					foundPatch = true
+					break
+				}
+			}
+			if !foundPatch {
+				t.Fatal("expected at least one patch action on nodepools")
+			}
+
+			gotSpot, err := mgr.GetWeight(context.Background(), "general-spot")
+			if err != nil {
+				t.Fatalf("failed to read general-spot weight: %v", err)
+			}
+			gotOD, err := mgr.GetWeight(context.Background(), "general-od")
+			if err != nil {
+				t.Fatalf("failed to read general-od weight: %v", err)
+			}
+			if gotSpot != tc.wantSpot || gotOD != tc.wantOD {
+				t.Fatalf("weights mismatch: spot=%d od=%d want spot=%d od=%d", gotSpot, gotOD, tc.wantSpot, tc.wantOD)
+			}
+		})
 	}
+}
 
-	// Case 2: Majority Decrease -> Favor OD
-	nodes2 := []NodeAssessment{
-		{NodeID: "n1", Action: inference.ActionDecrease10},
-		{NodeID: "n1", Action: inference.ActionDecrease30},
-		{NodeID: "n1", Action: inference.ActionDecrease30},
-	}
-
-	// Clear previous actions
-	dynClient.ClearActions()
-
-	ctrl.batchSteerKarpenterWeights(context.Background(), nodes2)
-
-	actions2 := dynClient.Actions()
-	if len(actions2) == 0 {
-		t.Error("expected patch actions for decrease case, got 0")
+func makeTestNodePool(name string, weight int64) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "karpenter.sh/v1",
+			"kind":       "NodePool",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"weight": weight,
+				"template": map[string]interface{}{
+					"spec": map[string]interface{}{
+						"requirements": []interface{}{
+							map[string]interface{}{
+								"key":      "karpenter.sh/capacity-type",
+								"operator": "In",
+								"values":   []interface{}{"spot", "on-demand"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }

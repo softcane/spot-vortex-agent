@@ -3,6 +3,10 @@
 #
 # Optional:
 #   RUN_KARPENTER_PROVIDER_LOCAL=1 to clone aws/karpenter-provider-aws and run `make run`.
+#   SPOTVORTEX_TEST_PRICE_PROVIDER_FILE=/path/to/fake-price-scenario.json to enable
+#     deterministic fake spot prices when running the agent in local e2e.
+#   SPOTVORTEX_TEST_PRICE_PROVIDER_JSON='{"default":{"current_price":0.2,"on_demand_price":1.0}}'
+#     for inline deterministic fake price scenarios.
 
 set -euo pipefail
 
