@@ -169,42 +169,6 @@ SPOTVORTEX_TEST_PRICE_PROVIDER_FILE=tests/e2e/manifests/fake-price-scenarios.jso
 go test -v ./tests/e2e -run 'TestKarpenterLocal_FakePriceProvider_' -count=1
 ```
 
-### Release install verification on kind
-
-```bash
-# Verifies both install paths:
-# 1) helm upgrade --install (OCI chart)
-# 2) hack/install.sh
-#
-# Defaults follow the chart's latest published appVersion/image tag.
-# Override env vars (CHART_VERSION, EXPECTED_IMAGE_REPOSITORY, EXPECTED_IMAGE_TAG) as needed.
-hack/verify-release-kind-install.sh
-
-# One-command local release smoke test (requires VERSION):
-# make verify-release-kind VERSION=vX.Y.Z
-
-# Optional: verify the "Install with Script" path using a freshly downloaded install.sh.
-# INSTALL_SCRIPT_MODE=download \
-# INSTALL_SCRIPT_URL=https://raw.githubusercontent.com/softcane/spot-vortex-agent/main/hack/install.sh \
-# hack/verify-release-kind-install.sh
-
-# Pre-release/local image validation example:
-# RELEASE_TAG=vX.Y.Z
-# docker build --build-arg VERSION=${RELEASE_TAG} -t spotvortex-agent:${RELEASE_TAG} .
-# FORCE_IMAGE_OVERRIDE=1 \
-# EXPECTED_IMAGE_REPOSITORY=spotvortex-agent \
-# EXPECTED_IMAGE_TAG=${RELEASE_TAG} \
-# KIND_LOAD_IMAGE=spotvortex-agent:${RELEASE_TAG} \
-# CHART_REF=charts/spotvortex \
-# CHART_VERSION= \
-# hack/verify-release-kind-install.sh
-```
-
-## Project Status
-
-- Karpenter local E2E coverage is active and used in CI.
-- EKS Anywhere + Cluster Autoscaler exists as a dedicated harness and is currently manual-run due to environment variability.
-
 ## Open Areas for Contribution
 
 - EKS Anywhere Docker control-plane startup hardening.
