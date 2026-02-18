@@ -4,7 +4,6 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-spotvortex}"
 RELEASE_NAME="${RELEASE_NAME:-spotvortex}"
 CHART_REF="${CHART_REF:-oci://ghcr.io/spotvortex/charts/spotvortex}"
-API_KEY="${SPOTVORTEX_API_KEY:-${API_KEY:-}}"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "helm is required"
@@ -16,10 +15,6 @@ HELM_ARGS=(
   --namespace "${NAMESPACE}"
   --create-namespace
 )
-
-if [[ -n "${API_KEY}" ]]; then
-  HELM_ARGS+=(--set "apiKey=${API_KEY}")
-fi
 
 helm "${HELM_ARGS[@]}"
 

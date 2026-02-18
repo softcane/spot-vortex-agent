@@ -23,8 +23,8 @@ RUN go mod download
 COPY . .
 
 # Build the binary (onnxruntime_go requires CGO).
-# xx-go automatically sets GOOS, GOARCH, CC, CXX, and CGO_ENABLED=1 for target platform.
-RUN xx-go build -ldflags "-s -w -linkmode external -extldflags '-static'" -o /app/spotvortex-agent ./cmd/agent && \
+# Force CGO explicitly so external/static link flags never run with CGO disabled.
+RUN CGO_ENABLED=1 xx-go build -ldflags "-s -w -linkmode external -extldflags '-static'" -o /app/spotvortex-agent ./cmd/agent && \
     xx-verify /app/spotvortex-agent
 
 # Production image
