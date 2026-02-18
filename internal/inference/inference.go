@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -258,10 +260,10 @@ func (inf *ONNXInference) Close() error {
 func SetSharedLibraryPath() {
 	paths := []string{}
 	if env := os.Getenv("ORT_SHARED_LIBRARY_PATH"); env != "" {
-		paths = append(paths, env)
+		paths = appendSharedLibraryCandidates(paths, env)
 	}
 	if env := os.Getenv("SPOTVORTEX_ONNXRUNTIME_PATH"); env != "" {
-		paths = append(paths, env)
+		paths = appendSharedLibraryCandidates(paths, env)
 	}
 	paths = appendVenvONNXRuntimeCandidates(paths)
 	paths = append(paths, []string{
@@ -281,6 +283,40 @@ func SetSharedLibraryPath() {
 		}
 	}
 	ort.SetSharedLibraryPath("onnxruntime")
+}
+
+func appendSharedLibraryCandidates(paths []string, rawPath string) []string {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return paths
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return append(paths, path)
+	}
+
+	patterns := []string{
+		filepath.Join(path, "libonnxruntime.so"),
+		filepath.Join(path, "libonnxruntime.so.*"),
+		filepath.Join(path, "libonnxruntime.dylib"),
+		filepath.Join(path, "libonnxruntime*.dylib"),
+	}
+	for _, pattern := range patterns {
+		matches, globErr := filepath.Glob(pattern)
+		if globErr != nil {
+			continue
+		}
+		sort.Strings(matches)
+		paths = append(paths, matches...)
+	}
+
+	// If the directory does not include recognized libonnxruntime files, keep the
+	// original directory path as a last-resort candidate for backward compatibility.
+	if len(paths) == 0 || paths[len(paths)-1] != path {
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func appendVenvONNXRuntimeCandidates(paths []string) []string {

@@ -4,11 +4,12 @@
 BINARY_NAME := agent
 BUILD_DIR := bin
 GO_FILES := $(shell find . -name '*.go' -not -path './vendor/*')
+VERSION ?= dev
 
 # Go build settings
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
-LDFLAGS := -ldflags "-s -w"
+LDFLAGS := -ldflags "-s -w -X github.com/softcane/spot-vortex-agent/cmd/agent/cmd.buildVersion=$(VERSION)"
 
 .PHONY: all build test lint clean dev-env help
 
@@ -71,13 +72,13 @@ test-e2e-karpenter:
 ## docker-build: Build Docker image
 docker-build:
 	@echo "==> Building Docker image..."
-	docker build -t spotvortex-agent:local .
+	docker build --build-arg VERSION=$(VERSION) -t spotvortex-agent:local .
 
 ## helm-lint: Lint and template Helm chart
 helm-lint:
 	@echo "==> Linting Helm chart..."
 	helm lint charts/spotvortex
-	helm template spotvortex charts/spotvortex --set apiKey=dummy >/tmp/spotvortex_chart.yaml
+	helm template spotvortex charts/spotvortex >/tmp/spotvortex_chart.yaml
 
 ## helm-package: Package Helm chart
 helm-package:
@@ -85,6 +86,22 @@ helm-package:
 	mkdir -p dist
 	helm dependency update charts/spotvortex || true
 	helm package charts/spotvortex --destination dist
+
+## verify-release-kind: Build local image and verify helm/script installs on kind
+verify-release-kind:
+	@echo "==> Verifying release install paths on kind..."
+	@if [ -z "$(VERSION)" ] || [ "$(VERSION)" = "dev" ]; then \
+		echo "Set VERSION=vX.Y.Z (or a release-candidate tag) before running verify-release-kind"; \
+		exit 1; \
+	fi
+	docker build --build-arg VERSION=$(VERSION) -t spotvortex-agent:$(VERSION) .
+	CHART_REF=charts/spotvortex \
+	CHART_VERSION= \
+	FORCE_IMAGE_OVERRIDE=1 \
+	EXPECTED_IMAGE_REPOSITORY=spotvortex-agent \
+	EXPECTED_IMAGE_TAG=$(VERSION) \
+	KIND_LOAD_IMAGE=spotvortex-agent:$(VERSION) \
+	bash hack/verify-release-kind-install.sh
 
 ## help: Show this help message
 help:

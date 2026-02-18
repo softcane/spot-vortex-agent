@@ -20,7 +20,7 @@ spec:
       serviceAccountName: {{ include "spotvortex.serviceAccountName" . }}
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          image: "{{ .Values.agent.image.repository }}:{{ default .Chart.AppVersion .Values.agent.image.tag }}"
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           args:
             - run
@@ -40,6 +40,32 @@ spec:
             {{- end }}
             - name: SPOTVORTEX_CLOUD
               value: {{ .Values.cloud | quote }}
+            {{- if .Values.agent.onnxRuntimeLibraryPath }}
+            - name: SPOTVORTEX_ONNXRUNTIME_PATH
+              value: {{ .Values.agent.onnxRuntimeLibraryPath | quote }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.agent.metricsPort }}
+              protocol: TCP
+          {{- if .Values.agent.probes.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: {{ .Values.agent.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.agent.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.agent.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.agent.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: {{ .Values.agent.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.agent.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.agent.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.agent.probes.liveness.failureThreshold }}
+          {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
           volumeMounts:

@@ -55,7 +55,8 @@ autoscaling:
   pollIntervalSeconds: 10
 
 karpenter:
-  enabled: true
+  # Default off for broad install compatibility. Enable on clusters where Karpenter CRDs exist.
+  enabled: false
   useExtendedPoolId: false
   spotNodePoolSuffix: "-spot"
   onDemandNodePoolSuffix: "-od"
@@ -68,11 +69,28 @@ karpenter:
 
 agent:
   image:
-    repository: ghcr.io/spotvortex/agent
-    tag: "1.1.0"
+    repository: ghcr.io/softcane/spot-vortex-agent
+    # Empty means "use .Chart.AppVersion".
+    tag: ""
     pullPolicy: IfNotPresent
+  # Explicit file path for ONNX shared library inside the container.
+  # This overrides image-level defaults and keeps startup deterministic.
+  onnxRuntimeLibraryPath: "/usr/local/lib/onnxruntime/libonnxruntime.so.1.23.2"
 
   replicas: 1
+  metricsPort: 8080
+  probes:
+    enabled: true
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 6
+    liveness:
+      initialDelaySeconds: 20
+      periodSeconds: 20
+      timeoutSeconds: 3
+      failureThreshold: 3
 
   resources:
     requests:

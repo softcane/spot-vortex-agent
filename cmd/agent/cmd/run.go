@@ -26,6 +26,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// buildVersion is injected at build time via -ldflags; default is for local/dev builds.
+var buildVersion = "dev"
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Start the SpotVortex agent controller",
@@ -50,7 +53,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	slog.Info("starting SpotVortex agent",
 		"dry_run", IsDryRun(),
-		"version", "0.1.0",
+		"version", buildVersion,
 	)
 
 	// 1. Load Configuration

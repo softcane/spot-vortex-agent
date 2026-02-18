@@ -59,7 +59,10 @@ func setupLogging() error {
 	slog.SetDefault(logger)
 
 	if dryRun {
-		slog.Info("dry-run mode enabled", "action", "no cloud APIs will be called")
+		slog.Info(
+			"dry-run mode enabled",
+			"action", "mutating cloud actions are disabled; read-only market/telemetry calls may still occur",
+		)
 	}
 
 	return nil

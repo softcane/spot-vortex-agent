@@ -64,6 +64,7 @@ charts/*/tmpcharts/
 # Kubernetes
 kubeconfig
 *.kubeconfig
+hack/*.local.sh
 
 # doc
 docs_internal

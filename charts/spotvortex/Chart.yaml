@@ -2,8 +2,8 @@ apiVersion: v2
 name: spotvortex
 description: SpotVortex - The Stripe of Spot Computing
 type: application
-version: 1.0.0
-appVersion: "1.1.0"
+version: 0.0.1
+appVersion: "v0.0.1"
 
 keywords:
   - kubernetes
@@ -12,9 +12,9 @@ keywords:
   - ml
   - karpenter
 
-home: https://spotvortex.io
+home: https://github.com/softcane/spot-vortex-agent
 sources:
-  - https://github.com/spotvortex/spotvortex
+  - https://github.com/softcane/spot-vortex-agent
 
 maintainers:
   - name: SpotVortex Team
