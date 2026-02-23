@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "generated_at": "2026-02-22T09:20:45Z",
+  "generated_at": "2026-02-17T09:54:00Z",
   "cloud": "aws",
   "supported_instance_families": [
     "c5",
@@ -132,19 +132,19 @@
   "artifacts": {
     "tft.onnx": {
       "path": "tft.onnx",
-      "sha256": "ef4044e0ce4aa0c74e604929530d24dfe80fa9c40f438282a229bcf7b59bfead"
+      "sha256": "e5a9db72941690b4499f85f5a7a6cb180139a02010f4ee177c40053d823768e1"
     },
     "tft.onnx.data": {
       "path": "tft.onnx.data",
-      "sha256": "0ba770c899824a4d00b01864ba1e7bcb19a2c711ff6bd5b9c06d314dfa7e69b7"
+      "sha256": "b7b2117625516d4ab72acaaaf52a2d4b7ae3b274d832668ba37d8b5539626690"
     },
     "rl_policy.onnx": {
       "path": "rl_policy.onnx",
-      "sha256": "62a3049e75a27221a1230a9e80f6b6c67171a85811f25924a925a40f3a6e3320"
+      "sha256": "81cfb74404632a08e99b4895bef17c5c1f378f88915830fc8df84f2f63f70abf"
     },
     "rl_policy.onnx.data": {
       "path": "rl_policy.onnx.data",
-      "sha256": "ee5b98d3972bf55ca9531df63abd36908059c3007860a863e46c69ac3e6dcfc7"
+      "sha256": "fceac8e7842e87c1247030097788a739894389d3495b14e22c3fb040bbdd7dc1"
     }
   },
   "parity": {

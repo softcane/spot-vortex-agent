@@ -19,6 +19,7 @@ import (
 	"github.com/softcane/spot-vortex-agent/internal/inference"
 	"github.com/softcane/spot-vortex-agent/internal/karpenter"
 	"github.com/softcane/spot-vortex-agent/internal/metrics"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -36,6 +37,13 @@ type Controller struct {
 	coll   *collector.Collector
 	logger *slog.Logger
 	metric *metricSynth
+
+	reliabilityTelemetry metrics.ReliabilityTelemetryCollector
+
+	// Test hooks (nil in production)
+	predictDetailedOverride      predictDetailedFunc
+	supportsInstanceTypeOverride supportsInstanceTypeFunc
+	runtimeConfigLoader          runtimeConfigLoaderFunc
 
 	// Karpenter integration (per PRODUCTION_FLOW_EKS_KARPENTER.md)
 	nodePoolMgr   *karpenter.NodePoolManager
@@ -94,6 +102,9 @@ type Config struct {
 	Autoscaling config.AutoscalingConfig
 	// ASGClient for ASG operations (nil = disabled, use FakeASGClient for testing)
 	ASGClient capacity.ASGClient
+	// ReliabilityTelemetryCollector records real disruption/recovery signals.
+	// Nil defaults to a noop collector (metrics stay zero).
+	ReliabilityTelemetryCollector metrics.ReliabilityTelemetryCollector
 }
 
 // New creates a new Controller instance.
@@ -145,6 +156,12 @@ func New(cfg Config) (*Controller, error) {
 	var metricSynth *metricSynth
 	if useSyntheticMetrics {
 		metricSynth = newMetricSynth(time.Now().UnixNano() + 1)
+	}
+
+	reliabilityTelemetryCollector := cfg.ReliabilityTelemetryCollector
+	if reliabilityTelemetryCollector == nil {
+		reliabilityTelemetryCollector = metrics.NoopReliabilityTelemetryCollector{}
+		logger.Warn("reliability telemetry collector not configured; using noop collector (real reliability metrics will stay zero)")
 	}
 
 	var drainer *Drainer
@@ -221,31 +238,32 @@ func New(cfg Config) (*Controller, error) {
 	)
 
 	return &Controller{
-		cloud:               cfg.Cloud,
-		priceP:              cfg.PriceProvider,
-		k8s:                 cfg.K8sClient,
-		dynamicClient:       cfg.DynamicClient,
-		inf:                 cfg.Inference,
-		prom:                cfg.PrometheusClient,
-		drain:               drainer,
-		coll:                collector.NewCollector(cfg.K8sClient, logger), // Wiring Collector
-		logger:              logger,
-		metric:              metricSynth,
-		nodePoolMgr:         nodePoolMgr,
-		karpenterCfg:        cfg.Karpenter,
-		capacityRouter:      capacityRouter,
-		riskThreshold:       cfg.RiskThreshold,
-		maxDrainRatio:       cfg.MaxDrainRatio,
-		reconcileInterval:   cfg.ReconcileInterval,
-		confidenceThreshold: cfg.ConfidenceThreshold,
-		useSyntheticMetrics: useSyntheticMetrics,
-		stopCh:              make(chan struct{}),
-		priceHistory:        make(map[string][]float64),
-		lastMigration:       make(map[string]time.Time),
-		targetSpotRatio:     make(map[string]float64),
-		currentSpotRatio:    make(map[string]float64),
-		poolNodeCounts:      make(map[string]*poolCount),
-		lastWeightChange:    make(map[string]time.Time),
+		cloud:                cfg.Cloud,
+		priceP:               cfg.PriceProvider,
+		k8s:                  cfg.K8sClient,
+		dynamicClient:        cfg.DynamicClient,
+		inf:                  cfg.Inference,
+		prom:                 cfg.PrometheusClient,
+		drain:                drainer,
+		coll:                 collector.NewCollector(cfg.K8sClient, logger), // Wiring Collector
+		logger:               logger,
+		metric:               metricSynth,
+		reliabilityTelemetry: reliabilityTelemetryCollector,
+		nodePoolMgr:          nodePoolMgr,
+		karpenterCfg:         cfg.Karpenter,
+		capacityRouter:       capacityRouter,
+		riskThreshold:        cfg.RiskThreshold,
+		maxDrainRatio:        cfg.MaxDrainRatio,
+		reconcileInterval:    cfg.ReconcileInterval,
+		confidenceThreshold:  cfg.ConfidenceThreshold,
+		useSyntheticMetrics:  useSyntheticMetrics,
+		stopCh:               make(chan struct{}),
+		priceHistory:         make(map[string][]float64),
+		lastMigration:        make(map[string]time.Time),
+		targetSpotRatio:      make(map[string]float64),
+		currentSpotRatio:     make(map[string]float64),
+		poolNodeCounts:       make(map[string]*poolCount),
+		lastWeightChange:     make(map[string]time.Time),
 	}, nil
 }
 
@@ -331,6 +349,16 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return nil // Skip cycle instead of inferring with stale/default workload features.
 	}
 
+	// Step 1.6: Record real reliability telemetry (noop collector by default).
+	if c.reliabilityTelemetry != nil {
+		snapshot, err := c.reliabilityTelemetry.CollectReliabilityTelemetry(ctx)
+		if err != nil {
+			c.logger.Warn("failed to collect reliability telemetry", "error", err)
+		} else {
+			metrics.RecordReliabilityTelemetry(snapshot)
+		}
+	}
+
 	// Step 2: Run inference on each node
 	// PRODUCTION MODE: Inference failure is fatal for that node - skip
 	assessments, err := c.runInference(ctx, nodeMetrics)
@@ -359,6 +387,15 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 
 	// Step 4: Apply thundering herd protection (respects Karpenter disruption budgets)
 	nodesToDrain := c.applyDrainLimit(ctx, actionableNodes, len(nodeMetrics))
+
+	// Step 4.5: Apply guardrails before any capacity prep or actuation.
+	// This ensures blocked/downgraded actions do not drive Karpenter weight steering
+	// or capacity swap preparation.
+	nodesToDrain = c.applyGuardrailsBeforePrep(ctx, nodesToDrain)
+	if len(nodesToDrain) == 0 {
+		c.logger.Info("all candidate actions blocked by guardrails before capacity prep", "dry_run", isDryRun)
+		return nil
+	}
 
 	// Step 5: Prepare replacement capacity BEFORE draining.
 	// Routes to the correct CapacityManager per node:
@@ -400,6 +437,11 @@ type NodeAssessment struct {
 	CapacityScore float32
 	RuntimeScore  float32
 	Confidence    float32
+	// ClusterUtilization is the same-tick cluster utilization used during inference.
+	// It is carried into active guardrail checks so high-utilization blocking is honest.
+	ClusterUtilization float32
+	ShadowAction       inference.Action
+	HasShadow          bool
 }
 
 func (c *Controller) unsupportedFamilyAssessment(nodeID, instanceType, reason string) NodeAssessment {
@@ -454,12 +496,14 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 		return c.runPoolLevelInference(ctx, nodeMetrics)
 	}
 
-	runtimeCfg := c.loadRuntimeConfig()
+	runtimeCfg := c.runtimeConfigForTick()
 	riskMult := runtimeCfg.RiskMultiplier
 	stepMinutes := runtimeCfg.StepMinutes
 	useDeterministic := runtimeCfg.UseDeterministicPolicy()
+	useRLShadow := runtimeCfg.UseRLShadow()
 
 	assessments := make([]NodeAssessment, 0, len(nodeMetrics))
+	shadowProjectedByPool := make(map[string]float64, len(nodeMetrics))
 
 	// Get cluster-wide stats for feature building
 	clusterUtil := c.calculateClusterUtilization(nodeMetrics)
@@ -542,7 +586,7 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 			poolID = "unknown:unknown"
 		}
 
-		if supported, reason := c.inf.SupportsInstanceType(m.InstanceType); !supported {
+		if supported, reason := c.supportsInstanceType(m.InstanceType); !supported {
 			assessments = append(assessments, c.unsupportedFamilyAssessment(m.NodeID, m.InstanceType, reason))
 			continue
 		}
@@ -650,19 +694,44 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 			PriorityScore:      poolFeats.PriorityScore,
 		}
 
-		action, capacityScore, runtimeScore, confidence, err := c.inf.PredictDetailed(ctx, m.NodeID, state, riskMult)
+		action, capacityScore, runtimeScore, confidence, err := c.predictDetailed(ctx, m.NodeID, state, riskMult)
+		rlAvailable := err == nil
 
 		if err != nil {
-			c.logger.Error("inference failed for node", "node_id", m.NodeID, "error", err)
-			continue // Skip node, but don't fail entire loop
+			if useDeterministic {
+				if rlFallback, ok := inference.AsRLFallbackError(err); ok {
+					c.logger.Warn("RL inference failed in deterministic mode; proceeding with deterministic fallback",
+						"node_id", m.NodeID,
+						"capacity_score", rlFallback.CapacityScore,
+						"runtime_score", rlFallback.RuntimeScore,
+						"error", err,
+					)
+					capacityScore = rlFallback.CapacityScore
+					runtimeScore = rlFallback.RuntimeScore
+				} else {
+					c.logger.Error("inference failed for node", "node_id", m.NodeID, "error", err)
+					continue // Skip node, but don't fail entire loop
+				}
+			} else {
+				c.logger.Error("inference failed for node", "node_id", m.NodeID, "error", err)
+				continue // Skip node, but don't fail entire loop
+			}
 		}
 
+		rlAction := action
+		rlConfidence := confidence
 		decisionSource := "rl"
+		hasShadow := false
+		shadowAction := inference.ActionHold
 		if useDeterministic {
 			deterministicAction, deterministic := evaluateDeterministicPolicy(state, float64(capacityScore), float64(runtimeScore), runtimeCfg)
 			action = deterministicAction
 			confidence = 1.0
 			decisionSource = "deterministic"
+			if useRLShadow && rlAvailable {
+				hasShadow = true
+				shadowAction = rlAction
+			}
 
 			metrics.DeterministicDecisionReason.WithLabelValues(deterministic.Reason).Inc()
 			metrics.WorkloadCap.WithLabelValues(poolID).Set(deterministic.EffectiveCap)
@@ -674,15 +743,34 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 			} else {
 				metrics.WorkloadOOD.WithLabelValues(poolID).Set(0.0)
 			}
+			if useRLShadow && rlAvailable {
+				if _, ok := shadowProjectedByPool[poolID]; !ok {
+					shadowProjectedByPool[poolID] = 0
+				}
+				shadowProjectedByPool[poolID] += c.recordShadowDecisionComparison(
+					ctx,
+					poolID,
+					m.NodeID,
+					state,
+					action,
+					rlAction,
+					capacityScore,
+					rlConfidence,
+					1.0,
+				)
+			}
 		}
 		metrics.DecisionSource.WithLabelValues(decisionSource, inference.ActionToString(action)).Inc()
 
 		assessments = append(assessments, NodeAssessment{
-			NodeID:        m.NodeID,
-			Action:        action,
-			CapacityScore: capacityScore,
-			RuntimeScore:  runtimeScore,
-			Confidence:    confidence,
+			NodeID:             m.NodeID,
+			Action:             action,
+			CapacityScore:      capacityScore,
+			RuntimeScore:       runtimeScore,
+			Confidence:         confidence,
+			ClusterUtilization: float32(clusterUtil),
+			ShadowAction:       shadowAction,
+			HasShadow:          hasShadow,
 		})
 
 		metrics.CapacityScore.WithLabelValues(m.NodeID, m.Zone).Set(float64(capacityScore))
@@ -692,6 +780,12 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 		}
 		if m.InstanceType != "" {
 			metrics.OnDemandPriceUSD.WithLabelValues(m.InstanceType).Set(m.OnDemandPrice)
+		}
+	}
+
+	if useDeterministic && useRLShadow {
+		for poolID, delta := range shadowProjectedByPool {
+			metrics.ShadowProjectedSavingsDeltaUSD.WithLabelValues(poolID).Set(delta)
 		}
 	}
 
@@ -752,12 +846,14 @@ type poolAggregation struct {
 // It aggregates market telemetry to pool-level and runs inference once per pool using
 // the dominant instance type (by count). This provides "one coherent action per pool per tick".
 func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []metrics.NodeMetrics) ([]NodeAssessment, error) {
-	runtimeCfg := c.loadRuntimeConfig()
+	runtimeCfg := c.runtimeConfigForTick()
 	riskMult := runtimeCfg.RiskMultiplier
 	stepMinutes := runtimeCfg.StepMinutes
 	useDeterministic := runtimeCfg.UseDeterministicPolicy()
+	useRLShadow := runtimeCfg.UseRLShadow()
 
 	assessments := make([]NodeAssessment, 0, len(nodeMetrics))
+	shadowProjectedByPool := make(map[string]float64, len(nodeMetrics))
 
 	// Get cluster-wide stats for feature building
 	clusterUtil := c.calculateClusterUtilization(nodeMetrics)
@@ -900,7 +996,7 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 			continue
 		}
 
-		if supported, reason := c.inf.SupportsInstanceType(instanceType); !supported {
+		if supported, reason := c.supportsInstanceType(instanceType); !supported {
 			poolActions[poolKey] = c.unsupportedFamilyAssessment(poolKey, instanceType, reason)
 			continue
 		}
@@ -999,18 +1095,43 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 		}
 
 		// Run inference once for this pool
-		action, capacityScore, runtimeScore, confidence, err := c.inf.PredictDetailed(ctx, poolKey, state, riskMult)
+		action, capacityScore, runtimeScore, confidence, err := c.predictDetailed(ctx, poolKey, state, riskMult)
+		rlAvailable := err == nil
 		if err != nil {
-			c.logger.Error("pool-level inference failed", "pool", poolKey, "error", err)
-			continue
+			if useDeterministic {
+				if rlFallback, ok := inference.AsRLFallbackError(err); ok {
+					c.logger.Warn("RL inference failed in deterministic mode; proceeding with deterministic fallback",
+						"pool", poolKey,
+						"capacity_score", rlFallback.CapacityScore,
+						"runtime_score", rlFallback.RuntimeScore,
+						"error", err,
+					)
+					capacityScore = rlFallback.CapacityScore
+					runtimeScore = rlFallback.RuntimeScore
+				} else {
+					c.logger.Error("pool-level inference failed", "pool", poolKey, "error", err)
+					continue
+				}
+			} else {
+				c.logger.Error("pool-level inference failed", "pool", poolKey, "error", err)
+				continue
+			}
 		}
 
+		rlAction := action
+		rlConfidence := confidence
 		decisionSource := "rl"
+		hasShadow := false
+		shadowAction := inference.ActionHold
 		if useDeterministic {
 			deterministicAction, deterministic := evaluateDeterministicPolicy(state, float64(capacityScore), float64(runtimeScore), runtimeCfg)
 			action = deterministicAction
 			confidence = 1.0
 			decisionSource = "deterministic"
+			if useRLShadow && rlAvailable {
+				hasShadow = true
+				shadowAction = rlAction
+			}
 
 			metrics.DeterministicDecisionReason.WithLabelValues(deterministic.Reason).Inc()
 			metrics.WorkloadCap.WithLabelValues(poolKey).Set(deterministic.EffectiveCap)
@@ -1021,6 +1142,26 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 				}
 			} else {
 				metrics.WorkloadOOD.WithLabelValues(poolKey).Set(0.0)
+			}
+			if useRLShadow && rlAvailable {
+				if _, ok := shadowProjectedByPool[poolKey]; !ok {
+					shadowProjectedByPool[poolKey] = 0
+				}
+				representativeNodeID := ""
+				if len(agg.nodes) > 0 {
+					representativeNodeID = agg.nodes[0].NodeID
+				}
+				shadowProjectedByPool[poolKey] += c.recordShadowDecisionComparison(
+					ctx,
+					poolKey,
+					representativeNodeID,
+					state,
+					action,
+					rlAction,
+					capacityScore,
+					rlConfidence,
+					float64(len(agg.nodes)),
+				)
 			}
 		}
 		metrics.DecisionSource.WithLabelValues(decisionSource, inference.ActionToString(action)).Inc()
@@ -1036,11 +1177,14 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 		)
 
 		poolActions[poolKey] = NodeAssessment{
-			NodeID:        poolKey, // Pool-level action
-			Action:        action,
-			CapacityScore: capacityScore,
-			RuntimeScore:  runtimeScore,
-			Confidence:    confidence,
+			NodeID:             poolKey, // Pool-level action
+			Action:             action,
+			CapacityScore:      capacityScore,
+			RuntimeScore:       runtimeScore,
+			Confidence:         confidence,
+			ClusterUtilization: float32(clusterUtil),
+			ShadowAction:       shadowAction,
+			HasShadow:          hasShadow,
 		}
 
 		// Emit metrics for the pool
@@ -1051,6 +1195,12 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 		}
 		if instanceType != "" {
 			metrics.OnDemandPriceUSD.WithLabelValues(instanceType).Set(odPrice)
+		}
+	}
+
+	if useDeterministic && useRLShadow {
+		for poolID, delta := range shadowProjectedByPool {
+			metrics.ShadowProjectedSavingsDeltaUSD.WithLabelValues(poolID).Set(delta)
 		}
 	}
 
@@ -1075,18 +1225,21 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 			continue
 		}
 
-		if supported, reason := c.inf.SupportsInstanceType(instanceType); !supported {
+		if supported, reason := c.supportsInstanceType(instanceType); !supported {
 			assessments = append(assessments, c.unsupportedFamilyAssessment(nodeID, instanceType, reason))
 			continue
 		}
 
 		// Apply the same action to all nodes in the pool
 		assessments = append(assessments, NodeAssessment{
-			NodeID:        nodeID,
-			Action:        poolAction.Action,
-			CapacityScore: poolAction.CapacityScore,
-			RuntimeScore:  poolAction.RuntimeScore,
-			Confidence:    poolAction.Confidence,
+			NodeID:             nodeID,
+			Action:             poolAction.Action,
+			CapacityScore:      poolAction.CapacityScore,
+			RuntimeScore:       poolAction.RuntimeScore,
+			Confidence:         poolAction.Confidence,
+			ClusterUtilization: poolAction.ClusterUtilization,
+			ShadowAction:       poolAction.ShadowAction,
+			HasShadow:          poolAction.HasShadow,
 		})
 	}
 
@@ -1859,6 +2012,89 @@ func isDaemonSetPod(owners []metav1.OwnerReference) bool {
 	return false
 }
 
+func (c *Controller) applyActiveGuardrails(ctx context.Context, nodeObj *corev1.Node, assessment NodeAssessment) (inference.Action, bool, error) {
+	action, ok := toExecutorAction(assessment.Action)
+	if !ok {
+		return assessment.Action, false, nil
+	}
+
+	checker := NewGuardrailChecker(c.k8s, c.logger, c.maxDrainRatio)
+	result, err := checker.Check(ctx, nodeObj, action, NodeState{
+		NodeName:           nodeObj.Name,
+		InstanceType:       nodeObj.Labels["node.kubernetes.io/instance-type"],
+		Zone:               nodeObj.Labels["topology.kubernetes.io/zone"],
+		CapacityScore:      float64(assessment.CapacityScore),
+		Confidence:         float64(assessment.Confidence),
+		ClusterUtilization: float64(assessment.ClusterUtilization),
+	})
+	if err != nil {
+		return assessment.Action, false, fmt.Errorf("guardrail check failed: %w", err)
+	}
+	if result == nil {
+		return assessment.Action, false, nil
+	}
+	if !result.Approved {
+		c.logger.Warn("active action blocked by guardrails",
+			"node_id", assessment.NodeID,
+			"action", inference.ActionToString(assessment.Action),
+			"guardrail", result.GuardrailName,
+			"reason", result.Reason,
+		)
+		metrics.GuardrailBlocked.WithLabelValues(result.GuardrailName).Inc()
+		return assessment.Action, true, nil
+	}
+	if result.ModifiedAction == action {
+		return assessment.Action, false, nil
+	}
+
+	modified, ok := fromExecutorAction(result.ModifiedAction)
+	if !ok {
+		return assessment.Action, false, nil
+	}
+	c.logger.Info("active action downgraded by guardrails",
+		"node_id", assessment.NodeID,
+		"original", inference.ActionToString(assessment.Action),
+		"modified", inference.ActionToString(modified),
+		"guardrail", result.GuardrailName,
+		"reason", result.Reason,
+	)
+	return modified, false, nil
+}
+
+func (c *Controller) applyGuardrailsBeforePrep(ctx context.Context, nodes []NodeAssessment) []NodeAssessment {
+	if len(nodes) == 0 || c == nil || c.k8s == nil {
+		return nodes
+	}
+
+	filtered := make([]NodeAssessment, 0, len(nodes))
+	for _, n := range nodes {
+		nodeObj, err := c.k8s.CoreV1().Nodes().Get(ctx, n.NodeID, metav1.GetOptions{})
+		if err != nil {
+			// Safe fallback: do not prepare capacity or actuate when guardrail pre-check
+			// cannot evaluate the node.
+			c.logger.Warn("skipping action before capacity prep: failed to fetch node for guardrail pre-check",
+				"node_id", n.NodeID,
+				"error", err,
+			)
+			continue
+		}
+		guardedAction, blocked, err := c.applyActiveGuardrails(ctx, nodeObj, n)
+		if err != nil {
+			c.logger.Warn("skipping action before capacity prep: guardrail pre-check failed",
+				"node_id", n.NodeID,
+				"error", err,
+			)
+			continue
+		}
+		if blocked {
+			continue
+		}
+		n.Action = guardedAction
+		filtered = append(filtered, n)
+	}
+	return filtered
+}
+
 // executeAction executes the RL decision on the target node.
 func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) error {
 	if c.k8s == nil {
@@ -1902,7 +2138,8 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 	)
 
 	shouldDrain := false
-	switch node.Action {
+	actionToExecute := node.Action
+	switch actionToExecute {
 	case inference.ActionHold:
 		return nil
 	case inference.ActionIncrease10, inference.ActionIncrease30:
@@ -1925,6 +2162,15 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 		return nil
 	}
 
+	guardedAction, blocked, err := c.applyActiveGuardrails(ctx, nodeObj, node)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return nil
+	}
+	actionToExecute = guardedAction
+
 	// Get pool ID - use extended format if configured
 	workloadPool := labels[collector.WorkloadPoolLabel]
 	instanceType := labels["node.kubernetes.io/instance-type"]
@@ -1932,11 +2178,11 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 	poolID := c.getPoolIDWithExtendedFormat(instanceType, zone, workloadPool)
 
 	// Load runtime config for ratio bounds
-	runtimeCfg := c.loadRuntimeConfig()
+	runtimeCfg := c.runtimeConfigForTick()
 	riskLow := node.CapacityScore < float32(c.riskThreshold)*0.5 // Consider low risk if below 50% of threshold
 
 	// Update target spot ratio with runtime config bounds
-	c.applyTargetSpotRatioWithConfig(poolID, node.Action, runtimeCfg, riskLow)
+	c.applyTargetSpotRatioWithConfig(poolID, actionToExecute, runtimeCfg, riskLow)
 
 	// NOTE: Karpenter weight steering is now handled in batch by batchSteerKarpenterWeights()
 	// called in reconcile() BEFORE this function. This ensures:
@@ -1990,7 +2236,7 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 			c.historyLock.Unlock()
 		}
 
-		metrics.ActionTaken.WithLabelValues(inference.ActionToString(node.Action)).Inc()
+		metrics.ActionTaken.WithLabelValues(inference.ActionToString(actionToExecute)).Inc()
 		metrics.OutagesAvoided.Inc()
 	}
 

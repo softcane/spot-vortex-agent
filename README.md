@@ -113,6 +113,26 @@ jq '{generated_at, cloud, supported_instance_families, artifacts}' models/MODEL_
 Reference model card (supplementary):
 - [SpotVortex TFT Dual-Head Risk Model (ONNX)](https://huggingface.co/softcane/spot-vortex)
 
+### Operating Mode Transparency (Current)
+
+- **Active controller (production-safe path):** deterministic policy (`policy_mode: deterministic`)
+- **RL policy:** supported, but recommended in **shadow mode** until your own telemetry confirms reliability in your environment
+- **Unsupported instance families:** forced into safe fallback behavior and counted in metrics
+
+### Transparency Pack (Read This Before Trusting Results)
+
+We publish plain-English explanations and examples so operators can judge value and risk without reading the source code:
+
+- [`docs/MODEL_TRANSPARENCY.md`](docs/MODEL_TRANSPARENCY.md) — what the TFT and RL models do, what results mean, and what we do/do not claim
+- [`docs/RISK_AND_OUTAGE_MEANING.md`](docs/RISK_AND_OUTAGE_MEANING.md) — simple definitions for risk, exposure events, and service impact events
+- [`docs/OPERATIONS_MONITORING.md`](docs/OPERATIONS_MONITORING.md) — Prometheus/Grafana metrics and what to watch during rollout
+
+Short version:
+
+- We optimize for **measurable savings with bounded risk**, not "maximum spot at all times."
+- We separate **proxy risk/exposure metrics** from **customer-impact metrics**.
+- We will show assumptions next to every chart (sample size, date range, cadence, outage definition).
+
 ## How It Works
 
 1. Collect node + market telemetry.

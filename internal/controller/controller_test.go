@@ -451,6 +451,134 @@ func TestController_ExecuteAction(t *testing.T) {
 	}
 }
 
+func TestController_ExecuteAction_HighUtilizationGuardrailBlocksBeforeActuation(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset()
+	logger := slog.Default()
+
+	// Need >=5 spot nodes so cluster-fraction guardrail (1/N) does not block before high-utilization.
+	for i := 1; i <= 5; i++ {
+		createNode(k8sClient, fmt.Sprintf("node-%d", i), "spot", "us-east-1a", "m5.large")
+	}
+
+	poolID := "m5.large:us-east-1a"
+	ctrl := &Controller{
+		k8s:              k8sClient,
+		logger:           logger,
+		maxDrainRatio:    0.2,
+		riskThreshold:    0.8,
+		targetSpotRatio:  map[string]float64{poolID: 1.0},
+		currentSpotRatio: map[string]float64{},
+		runtimeConfigLoader: func() *config.RuntimeConfig {
+			return config.DefaultRuntimeConfig()
+		},
+	}
+
+	beforeBlocked := counterVecValue(t, metrics.GuardrailBlocked, "high_utilization")
+	err := ctrl.executeAction(context.Background(), NodeAssessment{
+		NodeID:             "node-1",
+		Action:             inference.ActionDecrease10,
+		CapacityScore:      0.4,
+		Confidence:         1.0,
+		ClusterUtilization: 0.99, // >95% => block DECREASE actions
+	})
+	if err != nil {
+		t.Fatalf("executeAction returned error for guardrail block: %v", err)
+	}
+
+	if delta := counterVecValue(t, metrics.GuardrailBlocked, "high_utilization") - beforeBlocked; delta != 1 {
+		t.Fatalf("guardrail_blocked_total{guardrail=high_utilization} delta=%v, want 1", delta)
+	}
+	if got := ctrl.targetSpotRatio[poolID]; got != 1.0 {
+		t.Fatalf("target spot ratio changed on blocked action: got %v want 1.0", got)
+	}
+}
+
+func TestController_ExecuteAction_HighUtilizationDowngradesEmergencyBeforeActuation(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset()
+	logger := slog.Default()
+
+	// Need >=5 spot nodes so cluster-fraction guardrail does not block first.
+	for i := 1; i <= 5; i++ {
+		createNode(k8sClient, fmt.Sprintf("node-e-%d", i), "spot", "us-east-1a", "m5.large")
+	}
+
+	poolID := "m5.large:us-east-1a"
+	ctrl := &Controller{
+		k8s:              k8sClient,
+		logger:           logger,
+		maxDrainRatio:    0.2,
+		riskThreshold:    0.8,
+		targetSpotRatio:  map[string]float64{poolID: 1.0},
+		currentSpotRatio: map[string]float64{},
+		runtimeConfigLoader: func() *config.RuntimeConfig {
+			return config.DefaultRuntimeConfig()
+		},
+		// No drainer: executeAction stops after ratio update, which is enough to verify downgrade.
+	}
+
+	err := ctrl.executeAction(context.Background(), NodeAssessment{
+		NodeID:             "node-e-1",
+		Action:             inference.ActionEmergencyExit,
+		CapacityScore:      0.95,
+		Confidence:         1.0,
+		ClusterUtilization: 0.90, // >85% => downgrade emergency to DECREASE_30
+	})
+	if err != nil {
+		t.Fatalf("executeAction returned error for downgraded action: %v", err)
+	}
+
+	got := ctrl.targetSpotRatio[poolID]
+	if got < 0.69 || got > 0.71 {
+		t.Fatalf("target spot ratio=%v, want ~0.70 (guardrail downgrade to DECREASE_30, not emergency exit)", got)
+	}
+}
+
+func TestController_ApplyGuardrailsBeforePrep_FiltersBlockedAndDowngrades(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset()
+	logger := slog.Default()
+
+	// Need >=5 spot nodes so cluster-fraction guardrail does not block before high-utilization.
+	for i := 1; i <= 5; i++ {
+		createNode(k8sClient, fmt.Sprintf("node-g-%d", i), "spot", "us-east-1a", "m5.large")
+	}
+
+	ctrl := &Controller{
+		k8s:           k8sClient,
+		logger:        logger,
+		maxDrainRatio: 0.2,
+	}
+
+	beforeBlocked := counterVecValue(t, metrics.GuardrailBlocked, "high_utilization")
+	nodes := []NodeAssessment{
+		{
+			NodeID:             "node-g-1",
+			Action:             inference.ActionDecrease10,
+			Confidence:         1.0,
+			ClusterUtilization: 0.99, // block
+		},
+		{
+			NodeID:             "node-g-2",
+			Action:             inference.ActionEmergencyExit,
+			Confidence:         1.0,
+			ClusterUtilization: 0.90, // downgrade to decrease_30
+		},
+	}
+
+	got := ctrl.applyGuardrailsBeforePrep(context.Background(), nodes)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 node after guardrail pre-check, got %d", len(got))
+	}
+	if got[0].NodeID != "node-g-2" {
+		t.Fatalf("unexpected remaining node %q", got[0].NodeID)
+	}
+	if got[0].Action != inference.ActionDecrease30 {
+		t.Fatalf("expected downgraded action DECREASE_30, got %s", inference.ActionToString(got[0].Action))
+	}
+	if delta := counterVecValue(t, metrics.GuardrailBlocked, "high_utilization") - beforeBlocked; delta != 1 {
+		t.Fatalf("expected one high_utilization guardrail block metric increment, delta=%v", delta)
+	}
+}
+
 // TestBatchSteerKarpenterWeights covers the batch steering logic
 func TestBatchSteerKarpenterWeights(t *testing.T) {
 	k8sClient := k8sfake.NewSimpleClientset()

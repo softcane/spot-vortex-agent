@@ -43,6 +43,11 @@ type RuntimeConfig struct {
 	// Supported values: "rl", "deterministic".
 	PolicyMode string `json:"policy_mode"`
 
+	// RLShadowEnabled controls whether RL shadow comparison telemetry is recorded
+	// while deterministic mode is active. If omitted, deterministic mode defaults
+	// to enabled (to preserve current rollout behavior), and RL mode defaults off.
+	RLShadowEnabled *bool `json:"rl_shadow_enabled,omitempty"`
+
 	// DeterministicPolicy configures the TFT-risk + workload rule engine.
 	DeterministicPolicy DeterministicPolicyConfig `json:"deterministic_policy"`
 }
@@ -61,6 +66,9 @@ func LoadRuntimeConfig(path string) (*RuntimeConfig, error) {
 
 	applyRuntimeDefaults(&cfg)
 	applyRuntimeClamps(&cfg)
+	if err := validateRuntimeConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -248,6 +256,31 @@ func (c *RuntimeConfig) UseDeterministicPolicy() bool {
 		return false
 	}
 	return strings.EqualFold(c.PolicyMode, PolicyModeDeterministic)
+}
+
+// UseRLShadow reports whether RL shadow comparison should be recorded.
+// This only returns true when deterministic mode is active.
+func (c *RuntimeConfig) UseRLShadow() bool {
+	if c == nil || !c.UseDeterministicPolicy() {
+		return false
+	}
+	// Preserve existing deterministic-active + RL-shadow behavior when unset.
+	if c.RLShadowEnabled == nil {
+		return true
+	}
+	return *c.RLShadowEnabled
+}
+
+func validateRuntimeConfig(cfg *RuntimeConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	// Current implementation supports RL shadow comparison only when deterministic
+	// is the active policy. Reject unsupported combinations explicitly.
+	if strings.EqualFold(cfg.PolicyMode, PolicyModeRL) && cfg.RLShadowEnabled != nil && *cfg.RLShadowEnabled {
+		return fmt.Errorf("invalid runtime config: rl_shadow_enabled=true requires policy_mode=%q", PolicyModeDeterministic)
+	}
+	return nil
 }
 
 // DeterministicPolicyConfig controls deterministic action selection.

@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -58,6 +59,37 @@ type InferenceEngine struct {
 	builder *FeatureBuilder
 
 	runtimeHeadWarned bool
+}
+
+// RLFallbackError means TFT scores were computed but RL action selection failed.
+// Deterministic-active mode can use the embedded scores and continue safely.
+type RLFallbackError struct {
+	CapacityScore float32
+	RuntimeScore  float32
+	Cause         error
+}
+
+func (e *RLFallbackError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "rl inference failed after TFT scores were computed"
+	}
+	return e.Cause.Error()
+}
+
+func (e *RLFallbackError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// AsRLFallbackError extracts an RL fallback error and its TFT scores.
+func AsRLFallbackError(err error) (*RLFallbackError, bool) {
+	var target *RLFallbackError
+	if errors.As(err, &target) {
+		return target, true
+	}
+	return nil, false
 }
 
 // EngineConfig configures the InferenceEngine.
@@ -301,11 +333,18 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 
 	// 3. Build RL Input (13 features)
 	rlFeatures := e.builder.BuildRLInput(state, finalScore)
+	wrapRLFallback := func(cause error) error {
+		return &RLFallbackError{
+			CapacityScore: float32(finalScore),
+			RuntimeScore:  float32(runtimeScore),
+			Cause:         cause,
+		}
+	}
 
 	rlInputShape := ort.NewShape(1, int64(len(rlFeatures)))
 	rlInputTensor, err := ort.NewTensor(rlInputShape, rlFeatures)
 	if err != nil {
-		return ActionHold, 0, 0, 0, fmt.Errorf("failed to create RL tensor: %w", err)
+		return ActionHold, float32(finalScore), float32(runtimeScore), 0, wrapRLFallback(fmt.Errorf("failed to create RL tensor: %w", err))
 	}
 	defer rlInputTensor.Destroy()
 
@@ -313,12 +352,19 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 	rlInputs := map[string]*ort.Tensor[float32]{"state": rlInputTensor}
 	rlOutputs, err := e.rlModel.Predict(rlInputs)
 	if err != nil {
-		return ActionHold, 0, 0, 0, fmt.Errorf("RL inference failed: %w", err)
+		return ActionHold, float32(finalScore), float32(runtimeScore), 0, wrapRLFallback(fmt.Errorf("RL inference failed: %w", err))
 	}
 	defer destroyTensorMap(rlOutputs)
 
 	// Q-values output [batch, 6] -> find argmax (V2 spec)
-	qValues := rlOutputs["q_values"].GetData()
+	qTensor, ok := rlOutputs["q_values"]
+	if !ok || qTensor == nil {
+		return ActionHold, float32(finalScore), float32(runtimeScore), 0, wrapRLFallback(fmt.Errorf("RL inference failed: missing q_values output"))
+	}
+	qValues := qTensor.GetData()
+	if len(qValues) == 0 {
+		return ActionHold, float32(finalScore), float32(runtimeScore), 0, wrapRLFallback(fmt.Errorf("RL inference failed: empty q_values output"))
+	}
 
 	bestAction := ActionHold
 	maxQ := qValues[0]

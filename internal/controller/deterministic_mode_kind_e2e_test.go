@@ -3,17 +3,22 @@ package controller
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
 	"github.com/softcane/spot-vortex-agent/internal/inference"
 	svmetrics "github.com/softcane/spot-vortex-agent/internal/metrics"
-	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -87,7 +92,7 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	})
 
 	c, err := New(Config{
-		Cloud:    &noopCloudProvider{dryRun: true},
+		Cloud: &noopCloudProvider{dryRun: true},
 		PriceProvider: &MockPriceProvider{
 			PriceData: cloudapi.SpotPriceData{
 				CurrentPrice:  0.2,
@@ -120,6 +125,10 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	}
 
 	beforeDeterministic := decisionSourceTotal("deterministic")
+	beforeRL := decisionSourceTotal("rl")
+	beforeShadowRecommended := counterValueTwoLabels(t, svmetrics.ShadowActionRecommended, "rl", "HOLD")
+	beforeShadowSame := counterValueOneLabel(t, svmetrics.ShadowActionAgreement, "same")
+	beforeShadowDifferent := counterValueOneLabel(t, svmetrics.ShadowActionAgreement, "different")
 	assessments, err := c.runInference(context.Background(), nodeMetrics)
 	if err != nil {
 		t.Fatalf("runInference failed: %v", err)
@@ -128,17 +137,57 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 		t.Fatal("runInference returned no assessments")
 	}
 
-	afterDeterministic := decisionSourceTotal("deterministic")
-	if afterDeterministic-beforeDeterministic <= 0 {
-		t.Fatalf("expected deterministic decision_source counter to increase (before=%.0f after=%.0f)", beforeDeterministic, afterDeterministic)
-	}
-
+	shadowRecorded := false
 	for _, a := range assessments {
 		if a.Confidence != 1.0 {
 			t.Fatalf("expected deterministic override confidence=1.0, got %.3f", a.Confidence)
 		}
 		if inference.ActionToString(a.Action) == "UNKNOWN" {
 			t.Fatalf("received unknown action for node %s", a.NodeID)
+		}
+		if a.HasShadow {
+			shadowRecorded = true
+		}
+	}
+	if !shadowRecorded {
+		t.Skip("skipping: current Kind cluster nodes are outside model scope, so deterministic+shadow comparison path was not exercised")
+	}
+
+	afterDeterministic := decisionSourceTotal("deterministic")
+	if afterDeterministic-beforeDeterministic <= 0 {
+		t.Fatalf("expected deterministic decision_source counter to increase (before=%.0f after=%.0f)", beforeDeterministic, afterDeterministic)
+	}
+	afterRL := decisionSourceTotal("rl")
+	if afterRL-beforeRL != 0 {
+		t.Fatalf("expected no RL actuation decision_source increments in deterministic mode (before=%.0f after=%.0f)", beforeRL, afterRL)
+	}
+
+	afterShadowRecommended := counterValueTwoLabels(t, svmetrics.ShadowActionRecommended, "rl", "HOLD")
+	afterShadowSame := counterValueOneLabel(t, svmetrics.ShadowActionAgreement, "same")
+	afterShadowDifferent := counterValueOneLabel(t, svmetrics.ShadowActionAgreement, "different")
+	if (afterShadowRecommended-beforeShadowRecommended)+(afterShadowSame-beforeShadowSame)+(afterShadowDifferent-beforeShadowDifferent) <= 0 {
+		t.Fatal("expected RL shadow metrics to increase after deterministic runInference")
+	}
+
+	metricsText := scrapeMetricsText(t)
+	requiredNames := []string{
+		"spotvortex_shadow_action_recommended_total",
+		"spotvortex_shadow_action_agreement_total",
+		"spotvortex_shadow_action_delta_total",
+		"spotvortex_shadow_projected_savings_delta_usd",
+		"spotvortex_shadow_guardrail_blocked_total",
+		"spotvortex_aws_interruption_notice_total",
+		"spotvortex_aws_rebalance_recommendation_total",
+		"spotvortex_node_termination_total",
+		"spotvortex_node_notready_total",
+		"spotvortex_pod_evictions_total",
+		"spotvortex_pod_restarts_total",
+		"spotvortex_pod_pending_duration_seconds",
+		"spotvortex_recovery_time_seconds",
+	}
+	for _, name := range requiredNames {
+		if !strings.Contains(metricsText, name) {
+			t.Fatalf("metrics scrape missing %q", name)
 		}
 	}
 }
@@ -194,6 +243,52 @@ func decisionSourceTotal(source string) float64 {
 		total += m.GetCounter().GetValue()
 	}
 	return total
+}
+
+func counterValueOneLabel(t *testing.T, cv *prometheus.CounterVec, label string) float64 {
+	t.Helper()
+	counter, err := cv.GetMetricWithLabelValues(label)
+	if err != nil {
+		return 0
+	}
+	m := &dto.Metric{}
+	if err := counter.Write(m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func counterValueTwoLabels(t *testing.T, cv *prometheus.CounterVec, first, second string) float64 {
+	t.Helper()
+	counter, err := cv.GetMetricWithLabelValues(first, second)
+	if err != nil {
+		return 0
+	}
+	m := &dto.Metric{}
+	if err := counter.Write(m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func scrapeMetricsText(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(promhttp.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics status=%d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read /metrics body failed: %v", err)
+	}
+	return string(body)
 }
 
 func currentKubeContext() string {

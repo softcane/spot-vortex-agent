@@ -99,8 +99,16 @@ func TestKindClusterConnection(t *testing.T) {
 	// Verify we have expected nodes
 	spotNodes := 0
 	odNodes := 0
+	caNodes := 0
+	mngNodes := 0
 	for _, node := range nodes.Items {
 		capacityType := node.Labels["karpenter.sh/capacity-type"]
+		if node.Labels["spotvortex.io/manager"] == "cluster-autoscaler" {
+			caNodes++
+		}
+		if _, ok := node.Labels["eks.amazonaws.com/nodegroup"]; ok {
+			mngNodes++
+		}
 		switch capacityType {
 		case "spot":
 			spotNodes++
@@ -111,11 +119,18 @@ func TestKindClusterConnection(t *testing.T) {
 			node.Name, capacityType, node.Labels["topology.kubernetes.io/zone"])
 	}
 
-	if spotNodes < 3 {
-		t.Errorf("Expected at least 3 spot nodes, got %d", spotNodes)
+	// tests/e2e/setup.sh creates two Karpenter spot nodes plus extra CA/MNG-labeled workers.
+	if spotNodes < 2 {
+		t.Errorf("Expected at least 2 spot nodes, got %d", spotNodes)
 	}
 	if odNodes < 1 {
 		t.Errorf("Expected at least 1 on-demand node, got %d", odNodes)
+	}
+	if caNodes < 1 {
+		t.Errorf("Expected at least 1 Cluster Autoscaler labeled node, got %d", caNodes)
+	}
+	if mngNodes < 1 {
+		t.Errorf("Expected at least 1 Managed Nodegroup labeled node, got %d", mngNodes)
 	}
 }
 

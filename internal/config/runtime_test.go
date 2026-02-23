@@ -234,6 +234,9 @@ func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 	if cfg.UseDeterministicPolicy() {
 		t.Fatal("default config should not enable deterministic policy")
 	}
+	if cfg.UseRLShadow() {
+		t.Fatal("default RL mode should not enable RL shadow")
+	}
 
 	var nilCfg *RuntimeConfig
 	if nilCfg.UseDeterministicPolicy() {
@@ -244,6 +247,50 @@ func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 	if !cfg.UseDeterministicPolicy() {
 		t.Fatal("expected deterministic policy helper to return true")
 	}
+	if !cfg.UseRLShadow() {
+		t.Fatal("deterministic mode should enable RL shadow by default when unset")
+	}
+	disabled := false
+	cfg.RLShadowEnabled = &disabled
+	if cfg.UseRLShadow() {
+		t.Fatal("expected explicit rl_shadow_enabled=false to disable RL shadow")
+	}
+}
+
+func TestLoadRuntimeConfig_RLShadowToggleAndInvalidCombination(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("deterministic explicit false", func(t *testing.T) {
+		configPath := filepath.Join(tmpDir, "runtime-shadow-off.json")
+		content := `{
+			"policy_mode": "deterministic",
+			"rl_shadow_enabled": false
+		}`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+		cfg, err := LoadRuntimeConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadRuntimeConfig failed: %v", err)
+		}
+		if cfg.UseRLShadow() {
+			t.Fatal("expected rl shadow disabled when rl_shadow_enabled=false")
+		}
+	})
+
+	t.Run("invalid rl active plus shadow enabled", func(t *testing.T) {
+		configPath := filepath.Join(tmpDir, "runtime-invalid-shadow.json")
+		content := `{
+			"policy_mode": "rl",
+			"rl_shadow_enabled": true
+		}`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+		if _, err := LoadRuntimeConfig(configPath); err == nil {
+			t.Fatal("expected invalid config error for policy_mode=rl with rl_shadow_enabled=true")
+		}
+	})
 }
 
 func TestLoadRuntimeConfig_InvalidJSON(t *testing.T) {
