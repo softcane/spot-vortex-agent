@@ -3,213 +3,82 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/softcane/spot-vortex-agent)](https://goreportcard.com/report/github.com/softcane/spot-vortex-agent)
 
-> **North Star (Project Gate)**
-> Prove cost uplift without reliability regression: `eval/net_profit_improvement_pct >= +2.0` (median across seeds) and `eval/outage_delta <= 0` on every seed.
+SpotVortex is an open-source Kubernetes operator that helps teams use Spot capacity with safety controls.
 
-SpotVortex is an open-source Kubernetes operator for one hard problem: getting Spot savings without gambling on reliability.
+It runs in-cluster, makes local decisions, and aims for one outcome:
 
-## Problem
+- lower compute cost
+- bounded risk
+- auditable behavior
 
-Most teams face the same tradeoff:
+## Value At A Glance (Example)
 
-- Stay mostly On-Demand and overpay.
-- Push Spot aggressively and risk disruption during price spikes or capacity crunches.
+These numbers are **incremental net uplift vs a baseline policy** in our current simulation setup.
 
-Karpenter and Cluster Autoscaler are excellent provisioning primitives, but they are not a full risk-and-economics decision layer for workload migration under changing market conditions.
+- **Deterministic controller (active path today)**: safer default, production-first
+- **RL policy**: higher upside in some runs, but **shadow mode first** until your cluster telemetry confirms reliability
 
-## Solution
+### Example monthly uplift (illustrative)
 
-SpotVortex runs in-cluster and continuously decides when to favor Spot vs On-Demand using local telemetry, model inference, and safety guardrails.
+| Cluster size | Baseline policy uplift | Deterministic (active) | RL shadow upside (simulated) |
+|---|---:|---:|---:|
+| 100 nodes | $0 | ~$293/mo | ~$1,758/mo |
+| 300 nodes | $0 | ~$878/mo | ~$5,274/mo |
+| 1000 nodes | $0 | ~$2,928/mo | ~$17,581/mo |
 
-- **Local inference**: ONNX models run inside the cluster.
-- **Safety gates**: confidence thresholds, PDB-aware draining, bounded drain ratios.
-- **Provisioner-aware**: works with Karpenter and ASG-based environments (Cluster Autoscaler / Managed Nodegroup).
-- **Deterministic testing**: local E2E harnesses with scripted fake price scenarios for edge cases.
+### Example assumptions (important)
 
-## Mission
+These example numbers are not universal. They depend on workload mix and market conditions.
 
-Make cost optimization production-safe by default.
+- **Cloud**: AWS
+- **Node family mix (illustrative)**:
+  - compute-optimized (`c5/c6/c7*`): ~35%
+  - general-purpose (`m5/m6/m7*`): ~35%
+  - memory-optimized (`r5/r6/r7*`): ~15%
+  - burstable (`t3/t4g`): ~15%
+- **Workload mix used in simulation priors**:
+  - P0 critical: 6%
+  - P1 sensitive: 12%
+  - P2 standard: 47%
+  - P3 elastic/batch: 35%
+- **Metric used for value example**: `Service Impact Events (simulated)` (customer-impact proxy)
+- **Cadence**: 30-minute decision steps
+- **Period projection**: 730 hours/month
 
-Concretely: help platform teams adopt Spot with measurable savings, bounded risk, and auditable behavior.
+Best fit (highest value):
+- clusters with high node-hours
+- meaningful spot/on-demand price spread
+- workloads with some elastic capacity (not all P0/P1)
 
-## Architecture At A Glance
+## How SpotVortex Reduces Risk (Simple)
 
-```text
-Workloads + Node Metrics + Spot Prices
-                 |
-                 v
-          Collector (in-cluster)
-                 |
-                 v
-   Inference Engine (TFT -> policy action)
-                 |
-                 v
-  Safety Gates (confidence, PDB, drain limits)
-                 |
-                 v
-            Capacity Router
-            /             \
-           v               v
- Karpenter Manager    ASG Manager (CA/MNG)
- (NodePool weights)   (prepare replacement)
-           \               /
-            v             v
-        Guarded Drainer (shadow/real)
-                 |
-                 v
-      Cluster state + savings telemetry
-```
+SpotVortex does not just “push more Spot.”
 
-All decisions execute inside the cluster boundary.
+It adds safety controls around every decision:
 
-## Why SpotVortex vs Plain Karpenter/CA
+- confidence/risk gating
+- guarded draining and migration limits
+- safe fallback behavior for unsupported conditions
+- deterministic mode for production-safe rollout
+- shadow mode for comparing RL recommendations before enabling them
 
-SpotVortex is **not** a replacement for Karpenter/CA. It is a decision layer on top.
+## What “Risk” Means in Our Examples
 
-| Capability | Karpenter / CA alone | SpotVortex adds |
-| --- | --- | --- |
-| Provisioning & scaling | Yes | Uses existing provisioners |
-| Market risk scoring | No native ML risk policy | TFT + policy action selection |
-| Cost/risk actioning | Indirect | Explicit action space (`HOLD`, `INCREASE_*`, `DECREASE_*`, `EMERGENCY_EXIT`) |
-| Model scope enforcement | N/A | Manifest cloud/family scope checks |
-| Guarded migration logic | Basic primitives | Confidence gates + PDB-aware drain flow + throttling |
-| Deterministic fault simulation | Limited | Local fake price provider + fault-injection suites |
+We use clear labels so operators do not confuse proxy metrics with customer impact:
 
-## Model Transparency (Baked In)
+- **Exposure Events** = strict proxy (we were on Spot during a risky event label)
+- **Service Impact Events (simulated)** = closer proxy for customer impact
+- **Real interruption/recovery telemetry** = what matters most in production rollout
 
-This repository does not rely on a remote model link to define behavior. Runtime support is defined by the local model bundle and manifest:
+During rollout, you should judge success using **live telemetry**, not simulator metrics alone.
 
-- `models/tft.onnx`
-- `models/tft.onnx.data`
-- `models/rl_policy.onnx`
-- `models/rl_policy.onnx.data`
-- `models/MODEL_MANIFEST.json`
+## Current Recommended Rollout Mode
 
-Current manifest (`models/MODEL_MANIFEST.json`) states:
+- **Active controller**: deterministic
+- **RL**: shadow mode (compare only, no actuation) until your telemetry confirms it is safe in your environment
 
-- `generated_at`: `2026-02-17T09:54:00Z`
-- `cloud`: `aws`
-- `supported_instance_families` count: `60`
+## Transparency (Read Before Trusting)
 
-Supported families (current baked bundle):
-
-`c5, c5a, c5ad, c5d, c5n, c6a, c6g, c6gd, c6gn, c6i, c6id, c6in, c7a, c7g, c7gd, c7gn, c7i, c7i-flex, m5, m5a, m5ad, m5d, m5dn, m5n, m5zn, m6a, m6g, m6gd, m6i, m6id, m6idn, m6in, m7a, m7g, m7gd, m7i, m7i-flex, r5, r5a, r5ad, r5b, r5d, r5dn, r5n, r6a, r6g, r6gd, r6i, r6id, r6idn, r6in, r7a, r7g, r7gd, r7i, r7iz, t2, t3, t3a, t4g`
-
-Model/action contract at runtime:
-
-- TFT model is expected to provide `capacity_score` and `runtime_score`.
-- RL model outputs `q_values` over actions: `HOLD`, `DECREASE_10`, `DECREASE_30`, `INCREASE_10`, `INCREASE_30`, `EMERGENCY_EXIT`.
-- Runtime policy modes supported by config: `rl` and `deterministic`.
-- Startup verifies artifact checksums from manifest.
-- Cloud mismatch between config and manifest fails startup.
-- Unsupported instance families are forced into the safety fallback action (`EMERGENCY_EXIT`) and counted via `unsupported_instance_family_total`.
-
-Inspect exact current contract locally:
-
-```bash
-jq '{generated_at, cloud, supported_instance_families, artifacts}' models/MODEL_MANIFEST.json
-```
-
-Reference model card (supplementary):
-- [SpotVortex TFT Dual-Head Risk Model (ONNX)](https://huggingface.co/softcane/spot-vortex)
-
-### Operating Mode Transparency (Current)
-
-- **Active controller (production-safe path):** deterministic policy (`policy_mode: deterministic`)
-- **RL policy:** supported, but recommended in **shadow mode** until your own telemetry confirms reliability in your environment
-- **Unsupported instance families:** forced into safe fallback behavior and counted in metrics
-
-### Transparency Pack (Read This Before Trusting Results)
-
-We publish plain-English explanations and examples so operators can judge value and risk without reading the source code:
-
-- [`docs/MODEL_TRANSPARENCY.md`](docs/MODEL_TRANSPARENCY.md) — what the TFT and RL models do, what results mean, and what we do/do not claim
-- [`docs/RISK_AND_OUTAGE_MEANING.md`](docs/RISK_AND_OUTAGE_MEANING.md) — simple definitions for risk, exposure events, and service impact events
-- [`docs/OPERATIONS_MONITORING.md`](docs/OPERATIONS_MONITORING.md) — Prometheus/Grafana metrics and what to watch during rollout
-
-Short version:
-
-- We optimize for **measurable savings with bounded risk**, not "maximum spot at all times."
-- We separate **proxy risk/exposure metrics** from **customer-impact metrics**.
-- We will show assumptions next to every chart (sample size, date range, cadence, outage definition).
-
-## How It Works
-
-1. Collect node + market telemetry.
-2. Run dual-head inference and policy action selection.
-3. Apply capacity steering (for example, Karpenter NodePool weight patches).
-4. Execute guarded drain/migration flows.
-5. Fail safe when confidence or safety conditions are not met.
-
-## Repository Scope
-
-This repo contains the Go agent/runtime and deployment assets.
-Model training/data pipelines are out of scope for this repository.
-
-## Quick Start
-
-### Install with Helm
-
-```bash
-helm upgrade --install spotvortex oci://ghcr.io/softcane/charts/spotvortex \
-  --namespace spotvortex --create-namespace
-```
-
-### Install with Script
-
-```bash
-# Optional but recommended: pin install script to a release tag.
-RELEASE_TAG=vX.Y.Z
-curl -fsSL "https://raw.githubusercontent.com/softcane/spot-vortex-agent/${RELEASE_TAG}/hack/install.sh" | bash
-```
-
-## Local Development
-
-### Fast local checks
-
-```bash
-go list ./... | grep -v '/tests/e2e' | xargs go test -count=1
-helm lint charts/spotvortex
-helm template spotvortex charts/spotvortex >/tmp/spotvortex_chart.yaml
-docker build -t spotvortex-agent:local .
-```
-
-### Karpenter local E2E suite
-
-```bash
-SPOTVORTEX_E2E_SUITE=karpenter-local \
-go test -v ./tests/e2e -run 'TestKarpenterLocal_' -count=1
-```
-
-### Deterministic fake price scenarios (test-only)
-
-```bash
-SPOTVORTEX_E2E_SUITE=karpenter-local \
-SPOTVORTEX_TEST_PRICE_PROVIDER_FILE=tests/e2e/manifests/fake-price-scenarios.json \
-go test -v ./tests/e2e -run 'TestKarpenterLocal_FakePriceProvider_' -count=1
-```
-
-## Open Areas for Contribution
-
-- EKS Anywhere Docker control-plane startup hardening.
-- Additional E2E suites (Managed Nodegroups, broader autoscaler paths).
-- More fault-injection coverage around drain and patch failures.
-- Docs and runbooks for production rollout patterns.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-If you want to contribute, open an issue with one of:
-
-- a concrete bug report,
-- a reproducible test gap,
-- or a proposed design change with expected behavior.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) and IAM references in `docs/IAM_PERMISSIONS.md`.
-
-## License
-
-SpotVortex Agent is licensed under Apache-2.0. See [LICENSE](LICENSE).
+- [`docs/MODEL_TRANSPARENCY.md`](docs/MODEL_TRANSPARENCY.md)
+- [`docs/RISK_AND_OUTAGE_MEANING.md`](docs/RISK_AND_OUTAGE_MEANING.md)
+- [`docs/OPERATIONS_MONITORING.md`](docs/OPERATIONS_MONITORING.md)
