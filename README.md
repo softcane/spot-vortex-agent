@@ -76,9 +76,3 @@ During rollout, you should judge success using **live telemetry**, not simulator
 
 - **Active controller**: deterministic
 - **RL**: shadow mode (compare only, no actuation) until your telemetry confirms it is safe in your environment
-
-## Transparency (Read Before Trusting)
-
-- [`docs/MODEL_TRANSPARENCY.md`](docs/MODEL_TRANSPARENCY.md)
-- [`docs/RISK_AND_OUTAGE_MEANING.md`](docs/RISK_AND_OUTAGE_MEANING.md)
-- [`docs/OPERATIONS_MONITORING.md`](docs/OPERATIONS_MONITORING.md)
