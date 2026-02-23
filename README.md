@@ -26,12 +26,21 @@ These numbers are **incremental net uplift vs a baseline policy** in our current
 | 300 nodes | $0 | ~$878/mo | ~$5,274/mo |
 | 1000 nodes | $0 | ~$2,928/mo | ~$17,581/mo |
 
+![Example monthly uplift vs baseline policy (service-impact proxy)](docs/assets/value_uplift_example_service_impact.png)
+
+### What this RL shadow example means (simple)
+
+- The RL shadow upside example above uses the **service-impact proxy** (`Service Impact Events (simulated)`).
+- In that reference run (`RL seed42`), the projected upside came with **0 simulated service-impact events**.
+- The same policy also showed about **40 Exposure Events** under the stricter legacy proxy (`any_spot_eviction`) in the evaluation sample.
+- `730 hours/month` is only used to scale **money** into a monthly projection. It is **not** a claim of “40 events per month.”
+
 ### Example assumptions (important)
 
 These example numbers are not universal. They depend on workload mix and market conditions.
 
 - **Cloud**: AWS
-- **Node family mix (illustrative)**:
+- **Fleet node family mix (illustrative weighted average)**:
   - compute-optimized (`c5/c6/c7*`): ~35%
   - general-purpose (`m5/m6/m7*`): ~35%
   - memory-optimized (`r5/r6/r7*`): ~15%
