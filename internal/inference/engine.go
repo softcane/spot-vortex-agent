@@ -112,6 +112,41 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 		logger = slog.Default()
 	}
 
+	manifestPath := strings.TrimSpace(cfg.ModelManifestPath)
+	if manifestPath == "" {
+		manifestPath = defaultManifestPath(cfg.TFTModelPath)
+	}
+
+	scope, err := LoadModelContract(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load model contract from %s: %w", manifestPath, err)
+	}
+	if cfg.RequireModelContract {
+		if scope == nil {
+			return nil, fmt.Errorf(
+				"model contract is required but missing: %s",
+				manifestPath,
+			)
+		}
+		if err := VerifyManifestArtifacts(manifestPath, cfg.TFTModelPath, cfg.RLModelPath); err != nil {
+			return nil, fmt.Errorf("manifest artifact verification failed: %w", err)
+		}
+	}
+	if scope != nil {
+		expectedCloud := strings.TrimSpace(strings.ToLower(cfg.ExpectedCloud))
+		if expectedCloud == "" {
+			expectedCloud = strings.TrimSpace(strings.ToLower(os.Getenv("SPOTVORTEX_CLOUD")))
+		}
+		if expectedCloud != "" && scope.Cloud != "" && scope.Cloud != expectedCloud {
+			return nil, fmt.Errorf(
+				"model cloud mismatch: expected=%s manifest=%s path=%s",
+				expectedCloud,
+				scope.Cloud,
+				manifestPath,
+			)
+		}
+	}
+
 	// Initialize ONNX runtime
 	SetSharedLibraryPath()
 	if err := ort.InitializeEnvironment(); err != nil {
@@ -160,47 +195,7 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 		pysrFusionPath,
 	)
 
-	manifestPath := strings.TrimSpace(cfg.ModelManifestPath)
-	if manifestPath == "" {
-		manifestPath = defaultManifestPath(cfg.TFTModelPath)
-	}
-	scope, err := LoadModelContract(manifestPath)
-	if err != nil {
-		engineErr := fmt.Errorf("failed to load model contract from %s: %w", manifestPath, err)
-		tft.Close()
-		rl.Close()
-		return nil, engineErr
-	}
-	if cfg.RequireModelContract {
-		if scope == nil {
-			tft.Close()
-			rl.Close()
-			return nil, fmt.Errorf(
-				"model contract is required but missing: %s",
-				manifestPath,
-			)
-		}
-		if err := VerifyManifestArtifacts(manifestPath, cfg.TFTModelPath, cfg.RLModelPath); err != nil {
-			tft.Close()
-			rl.Close()
-			return nil, fmt.Errorf("manifest artifact verification failed: %w", err)
-		}
-	}
 	if scope != nil {
-		expectedCloud := strings.TrimSpace(strings.ToLower(cfg.ExpectedCloud))
-		if expectedCloud == "" {
-			expectedCloud = strings.TrimSpace(strings.ToLower(os.Getenv("SPOTVORTEX_CLOUD")))
-		}
-		if expectedCloud != "" && scope.Cloud != "" && scope.Cloud != expectedCloud {
-			tft.Close()
-			rl.Close()
-			return nil, fmt.Errorf(
-				"model cloud mismatch: expected=%s manifest=%s path=%s",
-				expectedCloud,
-				scope.Cloud,
-				manifestPath,
-			)
-		}
 		logger.Info("model contract loaded",
 			"manifest", manifestPath,
 			"cloud", scope.Cloud,
