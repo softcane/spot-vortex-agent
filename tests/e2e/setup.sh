@@ -2,14 +2,24 @@
 # SpotVortex E2E Test Setup Script
 # Creates Kind cluster with KWOK fake nodes, test workloads, and monitoring
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLUSTER_NAME="spotvortex-e2e"
 USE_KWOK="${USE_KWOK:-0}"
 INSTALL_MONITORING="${INSTALL_MONITORING:-1}"
-DASHBOARD_FILE="$PROJECT_ROOT/dashboards/spotvortex-dryrun.json"
+DRYRUN_DASHBOARD_FILE="$PROJECT_ROOT/dashboards/spotvortex-dryrun.json"
+OPS_DASHBOARD_FILE="$PROJECT_ROOT/dashboards/spotvortex-ops-shadow.json"
+AGENT_METRICS_SOURCE="${AGENT_METRICS_SOURCE:-service}"
+
+case "$AGENT_METRICS_SOURCE" in
+    service|host-endpoints) ;;
+    *)
+        echo "Error: AGENT_METRICS_SOURCE must be 'service' or 'host-endpoints' (got '$AGENT_METRICS_SOURCE')"
+        exit 1
+        ;;
+esac
 
 echo "=========================================="
 echo "SpotVortex E2E Test Environment Setup"
@@ -67,20 +77,33 @@ echo "Deploying test workloads..."
 kubectl apply -f "$SCRIPT_DIR/manifests/test-deployments.yaml"
 
 if [ "$INSTALL_MONITORING" = "1" ]; then
-    if [ ! -f "$DASHBOARD_FILE" ]; then
-        echo "Error: dashboard file not found: $DASHBOARD_FILE"
+    if [ ! -f "$DRYRUN_DASHBOARD_FILE" ]; then
+        echo "Error: dashboard file not found: $DRYRUN_DASHBOARD_FILE"
+        exit 1
+    fi
+    if [ ! -f "$OPS_DASHBOARD_FILE" ]; then
+        echo "Error: dashboard file not found: $OPS_DASHBOARD_FILE"
         exit 1
     fi
 
     echo ""
     echo "Deploying monitoring stack (Prometheus + Grafana)..."
     kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace spotvortex-system --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -f "$SCRIPT_DIR/manifests/agent-metrics-basic.yaml"
+    if [ "$AGENT_METRICS_SOURCE" = "host-endpoints" ]; then
+        echo "Applying opt-in host metrics bridge endpoint (Docker Desktop host -> :8080)"
+        kubectl apply -f "$SCRIPT_DIR/manifests/agent-metrics-host-endpoints.yaml"
+        echo "WARNING: host-endpoints mode can scrape the wrong local service if :8080 is in use."
+    else
+        echo "Using safe service-based metrics target (expects in-cluster spotvortex-agent Service endpoints)"
+    fi
 
-    echo "Provisioning SpotVortex dashboard into Grafana..."
+    echo "Provisioning SpotVortex dashboards into Grafana (dryrun + ops-shadow)..."
     kubectl create configmap spotvortex-dashboards \
         -n monitoring \
-        --from-file=spotvortex-dryrun.json="$DASHBOARD_FILE" \
+        --from-file=spotvortex-dryrun.json="$DRYRUN_DASHBOARD_FILE" \
+        --from-file=spotvortex-ops-shadow.json="$OPS_DASHBOARD_FILE" \
         --dry-run=client -o yaml | kubectl apply -f -
     kubectl label configmap spotvortex-dashboards -n monitoring grafana_dashboard=1 --overwrite >/dev/null 2>&1 || true
 
@@ -129,6 +152,11 @@ if [ "$INSTALL_MONITORING" = "1" ]; then
     echo ""
     echo "If localhost:30000 is not reachable, run:"
     echo "  kubectl -n monitoring port-forward svc/grafana 3000:3000"
+    echo ""
+    echo "Metrics scrape source mode:"
+    echo "  AGENT_METRICS_SOURCE=$AGENT_METRICS_SOURCE"
+    echo "  - service (default): scrape in-cluster spotvortex-agent Service endpoints in namespace spotvortex-system"
+    echo "  - host-endpoints: opt-in bridge to Docker Desktop host :8080 (be careful with port conflicts)"
 fi
 echo ""
 echo "To cleanup:"

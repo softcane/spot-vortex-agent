@@ -75,6 +75,8 @@ func TestReconcile_RecordsReliabilityTelemetryFromCollector(t *testing.T) {
 	beforeRestarts := testutil.ToFloat64(svmetrics.PodRestartsTotal)
 	beforePendingSamples := histogramSampleCountController(t, svmetrics.PodPendingDurationSeconds)
 	beforeRecoverySamples := histogramSampleCountController(t, svmetrics.RecoveryTimeSeconds)
+	beforeReconcileSamples := histogramSampleCountController(t, svmetrics.ReconcileLoopDuration)
+	beforeInferencePipelineSamples := histogramVecSampleCountController(t, svmetrics.InferenceLatency, "pipeline")
 
 	if err := ctrl.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
@@ -106,6 +108,12 @@ func TestReconcile_RecordsReliabilityTelemetryFromCollector(t *testing.T) {
 	}
 	if delta := histogramSampleCountController(t, svmetrics.RecoveryTimeSeconds) - beforeRecoverySamples; delta != 1 {
 		t.Fatalf("recovery histogram sample delta=%v, want 1", delta)
+	}
+	if delta := histogramSampleCountController(t, svmetrics.ReconcileLoopDuration) - beforeReconcileSamples; delta == 0 {
+		t.Fatalf("expected reconcile loop duration histogram samples to increase, delta=%v", delta)
+	}
+	if delta := histogramVecSampleCountController(t, svmetrics.InferenceLatency, "pipeline") - beforeInferencePipelineSamples; delta == 0 {
+		t.Fatalf("expected inference pipeline latency histogram samples to increase, delta=%v", delta)
 	}
 }
 
@@ -156,6 +164,23 @@ func histogramSampleCountController(t *testing.T, h prometheus.Histogram) uint64
 	m := &dto.Metric{}
 	if err := h.Write(m); err != nil {
 		t.Fatalf("write histogram metric: %v", err)
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
+func histogramVecSampleCountController(t *testing.T, hv *prometheus.HistogramVec, labels ...string) uint64 {
+	t.Helper()
+	observer, err := hv.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		t.Fatalf("get histogram vec metric: %v", err)
+	}
+	h, ok := observer.(prometheus.Histogram)
+	if !ok {
+		t.Fatalf("expected prometheus.Histogram, got %T", observer)
+	}
+	m := &dto.Metric{}
+	if err := h.Write(m); err != nil {
+		t.Fatalf("write histogram vec metric: %v", err)
 	}
 	return m.GetHistogram().GetSampleCount()
 }

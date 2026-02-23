@@ -22,7 +22,7 @@ data:
         metrics_path: /metrics
         static_configs:
           - targets:
-              - spotvortex-agent-metrics.monitoring.svc.cluster.local:8080
+              - spotvortex-agent-metrics.spotvortex-system.svc.cluster.local:8080
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -34,15 +34,6 @@ data:
     groups:
       - name: spotvortex-readiness
         rules:
-          - alert: SpotVortexHighRiskScore
-            expr: max_over_time(spotvortex_risk_score[10m]) > 0.90
-            for: 10m
-            labels:
-              severity: warning
-            annotations:
-              summary: "SpotVortex risk score sustained above 0.90"
-              description: "A managed pool has remained in high-risk state for more than 10 minutes."
-
           - alert: SpotVortexRuntimeRiskHigh
             expr: max_over_time(spotvortex_runtime_score[10m]) > 0.90
             for: 10m
@@ -51,15 +42,6 @@ data:
             annotations:
               summary: "SpotVortex runtime risk sustained above 0.90"
               description: "Runtime interruption risk has remained elevated for at least 10 minutes."
-
-          - alert: SpotVortexHighDrainPressure
-            expr: (spotvortex_nodes_draining / clamp_min(spotvortex_nodes_managed, 1)) > 0.25
-            for: 5m
-            labels:
-              severity: critical
-            annotations:
-              summary: "SpotVortex drain pressure exceeded 25%"
-              description: "Too many nodes are draining concurrently relative to managed nodes."
 
           - alert: SpotVortexReconcileLatencyP95High
             expr: histogram_quantile(0.95, sum by (le) (rate(spotvortex_reconcile_loop_duration_seconds_bucket[15m]))) > 5

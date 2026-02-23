@@ -81,7 +81,7 @@ var (
 		[]string{"guardrail"},
 	)
 
-	// InferenceLatency tracks ONNX inference duration.
+	// InferenceLatency tracks model/pipeline inference duration.
 	InferenceLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "spotvortex",
@@ -89,7 +89,7 @@ var (
 			Help:      "Latency of ONNX model inference",
 			Buckets:   prometheus.DefBuckets,
 		},
-		[]string{"model"}, // "tft" or "rl"
+		[]string{"model"}, // "tft", "rl", or "pipeline"
 	)
 
 	// ReconcileLoopDuration tracks the 5-minute event loop cycle time.

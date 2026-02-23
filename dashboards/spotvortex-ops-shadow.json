@@ -34,7 +34,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Deterministic is the active controller. RL metrics shown here are shadow-only comparison metrics. `spotvortex_shadow_projected_savings_delta_usd` is a projected hourly delta proxy (not realized savings). Some panels in this dashboard are text placeholders when a metric is defined but not emitted by the current deterministic-active runtime path. Use **Real Interruption Events** wording for AWS/Kubernetes actuals; see docs/RISK_AND_OUTAGE_MEANING.md for Exposure Events vs Service Impact Events definitions (these two proxy metrics are not live Prometheus series in this dashboard today)."
+        "content": "Deterministic is the active controller. RL metrics shown here are shadow-only comparison metrics. `spotvortex_shadow_projected_savings_delta_usd` is a projected hourly delta proxy (not realized savings). Some panels in this dashboard are text placeholders when a metric is defined but not emitted by the current deterministic-active runtime path. Use **Real Interruption Events** wording for AWS/Kubernetes actuals; see docs_internal/RISK_AND_OUTAGE_MEANING.md for Exposure Events vs Service Impact Events definitions (these two proxy metrics are not live Prometheus series in this dashboard today)."
       }
     },
     {
@@ -611,33 +611,91 @@
     },
     {
       "id": 22,
-      "type": "text",
-      "title": "Inference Latency (Metric Defined, Emitter Pending)",
+      "type": "timeseries",
+      "title": "Inference Latency (p50 / p95)",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
         "y": 59
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "options": {
-        "mode": "markdown",
-        "content": "`spotvortex_inference_latency_seconds` is defined but not emitted by the current runtime path. Placeholder panel prevents an over-claiming query."
-      }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, model) (rate(spotvortex_inference_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{model}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(spotvortex_inference_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{model}}",
+          "refId": "B"
+        }
+      ]
     },
     {
       "id": 23,
-      "type": "text",
-      "title": "Reconcile Loop Duration (Metric Defined, Emitter Pending)",
+      "type": "timeseries",
+      "title": "Reconcile Loop Duration (p50 / p95)",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
         "y": 59
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "options": {
-        "mode": "markdown",
-        "content": "`spotvortex_reconcile_loop_duration_seconds` is defined but not emitted by the current runtime path. Placeholder panel prevents a fake p50/p95 chart."
-      }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(spotvortex_reconcile_loop_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(spotvortex_reconcile_loop_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
     },
     {
       "id": 24,

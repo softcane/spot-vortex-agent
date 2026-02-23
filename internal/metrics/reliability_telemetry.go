@@ -77,7 +77,8 @@ var (
 )
 
 // ReliabilityTelemetrySnapshot is a truthful container for real cluster/provider signals.
-// TODO: Wire a real collector from Kubernetes events / provider notifications.
+// Kubernetes polling collectors can populate a subset today; provider event collectors can
+// extend this without changing the metric surface.
 type ReliabilityTelemetrySnapshot struct {
 	AWSInterruptionNotices      uint64
 	AWSRebalanceRecommendations uint64

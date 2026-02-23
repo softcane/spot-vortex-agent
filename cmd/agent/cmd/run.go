@@ -181,20 +181,21 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// 6. Initialize Controller
 	ctrl, err := controller.New(controller.Config{
-		Cloud:               cloudWrapper,
-		PriceProvider:       priceProvider,
-		K8sClient:           k8sClient,
-		DynamicClient:       dynamicClient,
-		Inference:           infEngine,
-		PrometheusClient:    promClient,
-		Logger:              slog.Default(),
-		RiskThreshold:       cfg.Controller.RiskThreshold,
-		MaxDrainRatio:       cfg.Controller.MaxDrainRatio,
-		ReconcileInterval:   cfg.Controller.ReconcileInterval(),
-		ConfidenceThreshold: cfg.Controller.ConfidenceThreshold,
-		Karpenter:           cfg.Karpenter,
-		Autoscaling:         cfg.Autoscaling,
-		ASGClient:           asgClient,
+		Cloud:                         cloudWrapper,
+		PriceProvider:                 priceProvider,
+		K8sClient:                     k8sClient,
+		DynamicClient:                 dynamicClient,
+		Inference:                     infEngine,
+		PrometheusClient:              promClient,
+		Logger:                        slog.Default(),
+		RiskThreshold:                 cfg.Controller.RiskThreshold,
+		MaxDrainRatio:                 cfg.Controller.MaxDrainRatio,
+		ReconcileInterval:             cfg.Controller.ReconcileInterval(),
+		ConfidenceThreshold:           cfg.Controller.ConfidenceThreshold,
+		Karpenter:                     cfg.Karpenter,
+		Autoscaling:                   cfg.Autoscaling,
+		ASGClient:                     asgClient,
+		ReliabilityTelemetryCollector: controller.NewKubernetesReliabilityTelemetryCollector(k8sClient, slog.Default()),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create controller: %w", err)

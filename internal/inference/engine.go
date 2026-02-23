@@ -428,12 +428,8 @@ func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error 
 	}
 	defer destroyTensorMap(tftOutputs)
 
-	_, _, hasRuntimeHead, err := extractRiskScores(tftOutputs)
-	if err != nil {
-		return fmt.Errorf("TFT model contract check failed: %w", err)
-	}
-	if requireRuntimeHead && !hasRuntimeHead {
-		return fmt.Errorf("TFT model contract check failed: runtime head is required but missing")
+	if err := validateTFTOutputContract(tftOutputs, requireRuntimeHead); err != nil {
+		return err
 	}
 
 	rlTensor, err := ort.NewTensor(
@@ -451,6 +447,25 @@ func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error 
 	}
 	defer destroyTensorMap(rlOutputs)
 
+	if err := validateRLQValuesOutputContract(rlOutputs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateTFTOutputContract(tftOutputs map[string]*ort.Tensor[float32], requireRuntimeHead bool) error {
+	_, _, hasRuntimeHead, err := extractRiskScores(tftOutputs)
+	if err != nil {
+		return fmt.Errorf("TFT model contract check failed: %w", err)
+	}
+	if requireRuntimeHead && !hasRuntimeHead {
+		return fmt.Errorf("TFT model contract check failed: runtime head is required but missing")
+	}
+	return nil
+}
+
+func validateRLQValuesOutputContract(rlOutputs map[string]*ort.Tensor[float32]) error {
 	qValuesTensor, ok := rlOutputs["q_values"]
 	if !ok || qValuesTensor == nil {
 		return fmt.Errorf("RL model contract check failed: missing q_values output")
@@ -463,7 +478,6 @@ func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error 
 	if len(qValuesTensor.GetData()) < 6 {
 		return fmt.Errorf("RL model contract check failed: q_values output contains fewer than 6 values")
 	}
-
 	return nil
 }
 

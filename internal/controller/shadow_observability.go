@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/softcane/spot-vortex-agent/internal/config"
 	"github.com/softcane/spot-vortex-agent/internal/inference"
@@ -34,6 +35,9 @@ func (c *Controller) supportsInstanceType(instanceType string) (bool, string) {
 }
 
 func (c *Controller) predictDetailed(ctx context.Context, nodeID string, state inference.NodeState, riskMultiplier float64) (inference.Action, float32, float32, float32, error) {
+	start := time.Now()
+	defer metrics.InferenceLatency.WithLabelValues("pipeline").Observe(time.Since(start).Seconds())
+
 	if c != nil && c.predictDetailedOverride != nil {
 		return c.predictDetailedOverride(ctx, nodeID, state, riskMultiplier)
 	}

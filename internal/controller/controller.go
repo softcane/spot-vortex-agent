@@ -328,6 +328,9 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	start := time.Now()
+	defer metrics.ReconcileLoopDuration.Observe(time.Since(start).Seconds())
+
 	isDryRun := c.cloud != nil && c.cloud.IsDryRun()
 	c.logger.Debug("starting reconciliation cycle", "dry_run", isDryRun)
 
