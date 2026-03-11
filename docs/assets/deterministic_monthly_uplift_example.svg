@@ -1,63 +1,89 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
-  <title id="title">Example Monthly Savings</title>
-  <desc id="desc">Bar chart showing simulated monthly net uplift for 100, 250, and 500 nodes using the deterministic SpotVortex runtime.</desc>
-  <rect width="1200" height="760" fill="#f4f0e8"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
+  <title id="title">Example Monthly Savings For m5.2xlarge</title>
+  <desc id="desc">Three baseline comparisons for 100 m5.2xlarge nodes using 79.05 percent effective Spot residency in the latest offline benchmark.</desc>
+  <rect width="1280" height="860" fill="#f6f1e8"/>
 
-  <text x="600" y="56" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="36" font-weight="700" fill="#162029">
-    Example Monthly Savings
+  <text x="640" y="62" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="38" font-weight="700" fill="#162029">
+    Example Monthly Savings For m5.2xlarge
   </text>
-  <text x="600" y="88" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#4f5d66">
-    Simulated monthly net uplift from the deterministic policy
+  <text x="640" y="96" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#4f5d66">
+    79.05% effective Spot residency in the latest offline benchmark
   </text>
 
-  <g font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#5b6770" stroke="#d9d2c4" stroke-width="1">
-    <line x1="120" y1="620" x2="1110" y2="620"/>
-    <line x1="120" y1="525" x2="1110" y2="525"/>
-    <line x1="120" y1="430" x2="1110" y2="430"/>
-    <line x1="120" y1="335" x2="1110" y2="335"/>
-    <line x1="120" y1="240" x2="1110" y2="240"/>
-    <line x1="120" y1="145" x2="1110" y2="145"/>
+  <g font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#65727a" stroke="#ddd4c6" stroke-width="1">
+    <line x1="120" y1="640" x2="1180" y2="640"/>
+    <line x1="120" y1="535" x2="1180" y2="535"/>
+    <line x1="120" y1="430" x2="1180" y2="430"/>
+    <line x1="120" y1="325" x2="1180" y2="325"/>
+    <line x1="120" y1="220" x2="1180" y2="220"/>
+    <line x1="120" y1="115" x2="1180" y2="115"/>
   </g>
 
   <g font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d66">
-    <text x="108" y="625" text-anchor="end">$0</text>
-    <text x="108" y="530" text-anchor="end">$0.6k</text>
-    <text x="108" y="435" text-anchor="end">$1.2k</text>
-    <text x="108" y="340" text-anchor="end">$1.8k</text>
-    <text x="108" y="245" text-anchor="end">$2.4k</text>
-    <text x="108" y="150" text-anchor="end">$3.0k</text>
+    <text x="108" y="645" text-anchor="end">$0</text>
+    <text x="108" y="540" text-anchor="end">$5.6k</text>
+    <text x="108" y="435" text-anchor="end">$11.2k</text>
+    <text x="108" y="330" text-anchor="end">$16.8k</text>
+    <text x="108" y="225" text-anchor="end">$22.4k</text>
+    <text x="108" y="120" text-anchor="end">$28.0k</text>
   </g>
 
-  <line x1="120" y1="145" x2="120" y2="620" stroke="#162029" stroke-width="2"/>
-  <line x1="120" y1="620" x2="1110" y2="620" stroke="#162029" stroke-width="2"/>
+  <line x1="120" y1="115" x2="120" y2="640" stroke="#162029" stroke-width="2"/>
+  <line x1="120" y1="640" x2="1180" y2="640" stroke="#162029" stroke-width="2"/>
 
-  <g font-family="Helvetica, Arial, sans-serif" text-anchor="middle">
-    <rect x="220" y="530.4" width="180" height="89.6" rx="10" fill="#218c74"/>
-    <text x="310" y="515" font-size="24" font-weight="700" fill="#162029">$566</text>
-    <text x="310" y="658" font-size="24" font-weight="600" fill="#162029">100 nodes</text>
+  <g font-family="Helvetica, Arial, sans-serif">
+    <rect x="150" y="182" width="290" height="392" rx="18" fill="#fbf8f2" stroke="#d6cdc0"/>
+    <text x="295" y="220" text-anchor="middle" font-size="24" font-weight="700" fill="#162029">On-Demand</text>
+    <text x="295" y="248" text-anchor="middle" font-size="16" fill="#5b6770">100 nodes, $0.384/hr baseline</text>
+    <rect x="195" y="302.4" width="84" height="337.6" rx="10" fill="#c9b89a"/>
+    <rect x="311" y="470.8" width="84" height="169.2" rx="10" fill="#218c74"/>
+    <text x="237" y="287" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$28,032</text>
+    <text x="353" y="455" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$14,067</text>
+    <text x="237" y="668" text-anchor="middle" font-size="16" fill="#162029">Baseline</text>
+    <text x="353" y="668" text-anchor="middle" font-size="16" fill="#162029">SpotVortex</text>
+    <rect x="188" y="118" width="214" height="44" rx="22" fill="#162029"/>
+    <text x="295" y="146" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">Save $13,965</text>
 
-    <rect x="510" y="396.2" width="180" height="223.8" rx="10" fill="#218c74"/>
-    <text x="600" y="381" font-size="24" font-weight="700" fill="#162029">$1.4k</text>
-    <text x="600" y="658" font-size="24" font-weight="600" fill="#162029">250 nodes</text>
+    <rect x="495" y="182" width="290" height="392" rx="18" fill="#fbf8f2" stroke="#d6cdc0"/>
+    <text x="640" y="220" text-anchor="middle" font-size="24" font-weight="700" fill="#162029">1-Year Reserved</text>
+    <text x="640" y="248" text-anchor="middle" font-size="16" fill="#5b6770">100 nodes, $0.242/hr baseline</text>
+    <rect x="540" y="427.6" width="84" height="212.4" rx="10" fill="#c9b89a"/>
+    <rect x="656" y="496.4" width="84" height="143.6" rx="10" fill="#218c74"/>
+    <text x="582" y="412" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$17,666</text>
+    <text x="698" y="481" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$11,895</text>
+    <text x="582" y="668" text-anchor="middle" font-size="16" fill="#162029">Baseline</text>
+    <text x="698" y="668" text-anchor="middle" font-size="16" fill="#162029">SpotVortex</text>
+    <rect x="533" y="118" width="214" height="44" rx="22" fill="#162029"/>
+    <text x="640" y="146" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">Save $5,771</text>
 
-    <rect x="800" y="172.4" width="180" height="447.6" rx="10" fill="#218c74"/>
-    <text x="890" y="157" font-size="24" font-weight="700" fill="#162029">$2.8k</text>
-    <text x="890" y="658" font-size="24" font-weight="600" fill="#162029">500 nodes</text>
+    <rect x="840" y="182" width="290" height="392" rx="18" fill="#fbf8f2" stroke="#d6cdc0"/>
+    <text x="985" y="220" text-anchor="middle" font-size="24" font-weight="700" fill="#162029">3-Year Reserved</text>
+    <text x="985" y="248" text-anchor="middle" font-size="16" fill="#5b6770">100 nodes, $0.166/hr baseline</text>
+    <rect x="885" y="494.4" width="84" height="145.6" rx="10" fill="#c9b89a"/>
+    <rect x="1001" y="511.4" width="84" height="128.6" rx="10" fill="#218c74"/>
+    <text x="927" y="479" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$12,118</text>
+    <text x="1043" y="496" text-anchor="middle" font-size="20" font-weight="700" fill="#162029">$10,733</text>
+    <text x="927" y="668" text-anchor="middle" font-size="16" fill="#162029">Baseline</text>
+    <text x="1043" y="668" text-anchor="middle" font-size="16" fill="#162029">SpotVortex</text>
+    <rect x="878" y="118" width="214" height="44" rx="22" fill="#162029"/>
+    <text x="985" y="146" text-anchor="middle" font-size="22" font-weight="700" fill="#ffffff">Save $1,385</text>
   </g>
 
-  <text x="32" y="383" transform="rotate(-90 32 383)" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#162029">
-    USD / month
+  <g font-family="Helvetica, Arial, sans-serif">
+    <rect x="160" y="710" width="18" height="18" rx="4" fill="#c9b89a"/>
+    <text x="188" y="724" font-size="17" fill="#162029">Customer baseline monthly cost for 100 nodes</text>
+    <rect x="590" y="710" width="18" height="18" rx="4" fill="#218c74"/>
+    <text x="618" y="724" font-size="17" fill="#162029">SpotVortex monthly cost for 100 nodes</text>
+  </g>
+
+  <text x="40" y="378" transform="rotate(-90 40 378)" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#162029">
+    USD / month for 100 nodes
   </text>
 
-  <rect x="136" y="106" width="18" height="18" fill="#218c74" rx="4"/>
-  <text x="166" y="121" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#162029">
-    Deterministic runtime, simulated net uplift
+  <text x="640" y="774" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
+    Assumptions: 730 hour month, m5.2xlarge, Spot rate $0.142/hr, effective Spot residency 79.05%, outages 0, migrations 22.
   </text>
-
-  <text x="600" y="698" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
-    Assumptions: 730 hour month, AWS example pools such as c6i.large, m6i.large, and r6i.large, and no outage regression in the offline benchmark.
-  </text>
-  <text x="600" y="724" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
-    Simulated example only. Real savings depend on your live workload mix, pool safety signals, and actual interruption conditions.
+  <text x="640" y="802" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
+    Offline benchmark example, not a production guarantee. Realized finance savings depend on baseline commitments and marginal spend displacement.
   </text>
 </svg>

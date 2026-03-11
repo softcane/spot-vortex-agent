@@ -7,9 +7,9 @@ SpotVortex Agent is the in-cluster controller for safe Spot adoption.
 
 It helps SRE and FinOps teams increase Spot usage at the node-pool level without handing workload data to an external service. The agent uses the shipped TFT risk model, live pool safety signals, and a deterministic control policy to decide when to grow, hold, freeze, or reduce Spot exposure.
 
-![Example simulated monthly deterministic uplift](docs/assets/deterministic_monthly_uplift_example.svg)
+![Example monthly savings for m5.2xlarge](docs/assets/deterministic_monthly_uplift_example.svg)
 
-The chart above is a simulated example, not a production guarantee. It shows the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
+The chart above is one worked example, not a production guarantee. It uses the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
 
 ## What You Deploy Today
 
@@ -35,20 +35,63 @@ The shipped runtime config lives in [config/runtime.json](config/runtime.json).
 
 The control unit is the node pool, not the individual pod.
 
-## How To Read The Savings Chart
+## Example: One `m5.2xlarge` Node Over One Month
 
-- It is a simulated monthly net uplift example.
-- It is scaled from the latest offline deterministic scorecard.
-- It assumes a `730` hour month.
-- It assumes AWS pools similar to `c6i.large`, `m6i.large`, and `r6i.large`.
-- It compares the current deterministic runtime to the older deterministic runtime.
-- It is not a promise for your production cluster.
+This is a simulation-backed scenario, not a production guarantee.
 
-If you are a FinOps or SRE reader, the right takeaway is:
+In the latest offline benchmark month for the `m5.2xlarge` slice, the shipped deterministic policy:
 
-- this is the direction and size of the value we are targeting
-- real results depend on your workload mix, pool safety, and interruption conditions
-- production rollout quality must be judged from live telemetry, not from this chart alone
+- kept effective Spot residency at `79.05%`
+- recorded `0` outages
+- migrated `22` times
+- used the transition-aware TFT as the market hazard signal
+
+That gives us a simple monthly cost model:
+
+```text
+monthly_system_cost = 730 * (spot_residency * spot_rate + (1 - spot_residency) * baseline_rate)
+monthly_savings = 730 * spot_residency * (baseline_rate - spot_rate)
+```
+
+This example is useful because it is easy to audit:
+
+- one node type
+- one clear Spot residency number
+- one clear monthly cost formula
+- three baseline cases that FinOps teams already understand
+
+| Baseline | Baseline Rate | Spot Rate | Baseline Monthly Cost / Node | SpotVortex Monthly Cost / Node | Savings / Node / Month | Savings At 100 Nodes / Month |
+|---|---:|---:|---:|---:|---:|---:|
+| On-Demand | `$0.384/hr` | `$0.142/hr` | `$280.32` | `$140.67` | `$139.65` | `$13,964.74` |
+| 1-Year Reserved | `$0.242/hr` | `$0.142/hr` | `$176.66` | `$118.95` | `$57.71` | `$5,770.55` |
+| 3-Year Reserved | `$0.166/hr` | `$0.142/hr` | `$121.18` | `$107.33` | `$13.85` | `$1,384.93` |
+
+These are gross compute-rate savings, not a guarantee of realized finance savings. Realized value depends on commitment utilization, whether commitments are stranded, and whether marginal spend is truly displaced.
+
+The old internal uplift chart compared one deterministic version to another. That is useful for engineering, but it is not the right first customer-facing number. A better customer-facing number is total compute savings versus the customer’s actual marginal baseline rate.
+
+### Assumptions
+
+- benchmark source: latest offline deterministic benchmark on the `m5.2xlarge` slice from the ML repo
+- effective Spot residency: `79.05%`
+- outages: `0`
+- migrations: `22`
+- month length: `730` hours
+- Spot rate and baseline rates are illustrative example rates
+- actual realized finance savings depend on whether commitment-covered spend is truly displaced
+
+### What This Does Not Claim
+
+- not a production guarantee
+- not a claim that every cluster reaches `79.05%` Spot residency
+- not a claim that all committed spend can be replaced dollar-for-dollar
+- not a claim that every node pool should be pushed this far on Spot
+
+If you are a FinOps or SRE reader, replace the example baseline with your actual marginal cost:
+
+- On-Demand
+- Reserved or Savings Plan effective marginal rate
+- or your own internal chargeback rate
 
 ## How The Runtime Thinks About Risk
 
@@ -100,7 +143,7 @@ Before calling a rollout successful, verify:
 - interruption and recovery behavior stays acceptable
 - savings improve without creating service impact
 
-The savings chart is useful for planning. Live telemetry is what decides production success.
+The `m5.2xlarge` example is useful for planning. Live telemetry is what decides production success.
 
 ## Quick Validation
 
@@ -171,3 +214,4 @@ For shadow-style local testing, use dry-run deployment settings rather than edit
 - `10` minutes is the active cadence
 - manifest-verified bundle loading is required
 - simulated value claims must be labeled as simulated
+- customer-facing savings examples should be expressed against a clear baseline rate
