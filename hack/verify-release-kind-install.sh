@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# Verifies release installation paths against a local kind cluster:
-# 1) Helm OCI install
+# Verifies release installation paths against a local Kind cluster:
+# 1) direct Helm install
 # 2) hack/install.sh install
-# It also asserts default shadow mode behavior and no API key requirement.
+#
+# Modes:
+# - VERIFY_MODE=local (default): uses the in-repo chart plus a local image loaded into Kind.
+# - VERIFY_MODE=published: uses the published OCI chart and requires an explicit CHART_VERSION.
 
 set -euo pipefail
+
+readonly LOCAL_CHART_REF_DEFAULT="charts/spotvortex"
+readonly PUBLISHED_CHART_REF_DEFAULT="oci://ghcr.io/softcane/spot-vortex-charts/spotvortex"
+
+VERIFY_MODE="${VERIFY_MODE:-local}"
 
 CLUSTER_NAME="${CLUSTER_NAME:-spotvortex-release-verify}"
 CREATE_CLUSTER="${CREATE_CLUSTER:-1}"
 DELETE_CLUSTER_ON_EXIT="${DELETE_CLUSTER_ON_EXIT:-1}"
 KIND_LOAD_IMAGE="${KIND_LOAD_IMAGE:-}"
+BUILD_LOCAL_IMAGE="${BUILD_LOCAL_IMAGE:-}"
+LOCAL_IMAGE_REPOSITORY="${LOCAL_IMAGE_REPOSITORY:-spotvortex-agent}"
+LOCAL_IMAGE_TAG="${LOCAL_IMAGE_TAG:-verify-local}"
+IMAGE_BUILD_VERSION="${IMAGE_BUILD_VERSION:-}"
 
-CHART_REF="${CHART_REF:-oci://ghcr.io/softcane/charts/spotvortex}"
+CHART_REF="${CHART_REF:-}"
 CHART_VERSION="${CHART_VERSION:-}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-5m}"
 INSTALL_SCRIPT_MODE="${INSTALL_SCRIPT_MODE:-local}"
@@ -21,6 +33,7 @@ EXPECTED_IMAGE_REPOSITORY="${EXPECTED_IMAGE_REPOSITORY:-}"
 EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG:-}"
 EXPECTED_ORT_LIBRARY_PATH="${EXPECTED_ORT_LIBRARY_PATH:-}"
 FORCE_IMAGE_OVERRIDE="${FORCE_IMAGE_OVERRIDE:-0}"
+IMAGE_PULL_SECRET_NAME="${IMAGE_PULL_SECRET_NAME:-}"
 
 HELM_RELEASE_NAME="${HELM_RELEASE_NAME:-spotvortex-helm}"
 HELM_NAMESPACE="${HELM_NAMESPACE:-spotvortex-helm}"
@@ -37,6 +50,50 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   fi
+}
+
+configure_mode_defaults() {
+  case "${VERIFY_MODE}" in
+    local)
+      CHART_REF="${CHART_REF:-${LOCAL_CHART_REF_DEFAULT}}"
+      EXPECTED_IMAGE_REPOSITORY="${EXPECTED_IMAGE_REPOSITORY:-${LOCAL_IMAGE_REPOSITORY}}"
+      EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG:-${LOCAL_IMAGE_TAG}}"
+      BUILD_LOCAL_IMAGE="${BUILD_LOCAL_IMAGE:-1}"
+      FORCE_IMAGE_OVERRIDE="1"
+      if [[ -z "${KIND_LOAD_IMAGE}" ]]; then
+        KIND_LOAD_IMAGE="${EXPECTED_IMAGE_REPOSITORY}:${EXPECTED_IMAGE_TAG}"
+      fi
+      if [[ -z "${IMAGE_BUILD_VERSION}" ]]; then
+        IMAGE_BUILD_VERSION="${EXPECTED_IMAGE_TAG}"
+      fi
+      ;;
+    published)
+      CHART_REF="${CHART_REF:-${PUBLISHED_CHART_REF_DEFAULT}}"
+      BUILD_LOCAL_IMAGE="${BUILD_LOCAL_IMAGE:-0}"
+      if [[ -z "${CHART_VERSION}" ]]; then
+        echo "VERIFY_MODE=published requires CHART_VERSION so Helm does not resolve an unexpected OCI chart version." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Unsupported VERIFY_MODE=${VERIFY_MODE}. Use local or published." >&2
+      exit 1
+      ;;
+  esac
+}
+
+build_local_image_if_needed() {
+  if [[ "${BUILD_LOCAL_IMAGE}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "${KIND_LOAD_IMAGE}" ]]; then
+    echo "BUILD_LOCAL_IMAGE=1 requires KIND_LOAD_IMAGE" >&2
+    exit 1
+  fi
+
+  require_cmd docker
+  log "Building local image for Kind verification: ${KIND_LOAD_IMAGE}"
+  docker build --build-arg "VERSION=${IMAGE_BUILD_VERSION}" -t "${KIND_LOAD_IMAGE}" . >/dev/null
 }
 
 cleanup() {
@@ -109,7 +166,13 @@ assert_shadow_defaults() {
     exit 1
   fi
 
-  kubectl -n "${namespace}" rollout status "deployment/${deploy}" --timeout="${HELM_TIMEOUT}" >/dev/null
+  if ! kubectl -n "${namespace}" rollout status "deployment/${deploy}" --timeout="${HELM_TIMEOUT}" >/dev/null; then
+    kubectl -n "${namespace}" get pods -l "app.kubernetes.io/instance=${release},app.kubernetes.io/component=agent" -o wide >&2 || true
+    kubectl -n "${namespace}" describe deployment "${deploy}" >&2 || true
+    kubectl -n "${namespace}" describe pods -l "app.kubernetes.io/instance=${release},app.kubernetes.io/component=agent" >&2 || true
+    kubectl -n "${namespace}" logs -l "app.kubernetes.io/instance=${release},app.kubernetes.io/component=agent" --tail=80 >&2 || true
+    exit 1
+  fi
   assert_pod_stability "${namespace}" "${release}"
 
   local args
@@ -174,7 +237,7 @@ assert_shadow_defaults() {
 }
 
 install_via_helm() {
-  log "Installing via Helm OCI (release=${HELM_RELEASE_NAME})"
+  log "Installing via Helm (mode=${VERIFY_MODE} release=${HELM_RELEASE_NAME} chart=${CHART_REF})"
   local helmArgs=(
     upgrade --install "${HELM_RELEASE_NAME}" "${CHART_REF}"
     --namespace "${HELM_NAMESPACE}"
@@ -192,6 +255,9 @@ install_via_helm() {
     fi
     helmArgs+=(--set-string "agent.image.repository=${EXPECTED_IMAGE_REPOSITORY}")
     helmArgs+=(--set-string "agent.image.tag=${EXPECTED_IMAGE_TAG}")
+  fi
+  if [[ -n "${IMAGE_PULL_SECRET_NAME}" ]]; then
+    helmArgs+=(--set-string "agent.image.pullSecrets[0]=${IMAGE_PULL_SECRET_NAME}")
   fi
   helm "${helmArgs[@]}"
 }
@@ -226,6 +292,7 @@ install_via_script() {
   HELM_TIMEOUT="${HELM_TIMEOUT}" \
   IMAGE_REPOSITORY="${imageRepo}" \
   IMAGE_TAG="${imageTag}" \
+  IMAGE_PULL_SECRET_NAME="${IMAGE_PULL_SECRET_NAME}" \
     bash "${installScriptPath}"
 
   if [[ -n "${tmpScript}" ]]; then
@@ -257,6 +324,8 @@ create_cluster_if_needed() {
 main() {
   trap cleanup EXIT
 
+  configure_mode_defaults
+
   require_cmd kind
   require_cmd kubectl
   require_cmd helm
@@ -265,6 +334,7 @@ main() {
     require_cmd curl
   fi
 
+  build_local_image_if_needed
   create_cluster_if_needed
 
   install_via_helm

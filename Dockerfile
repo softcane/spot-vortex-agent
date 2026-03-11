@@ -58,9 +58,11 @@ RUN set -eux; \
 
 ENV SPOTVORTEX_ONNXRUNTIME_PATH=/usr/local/lib/onnxruntime/libonnxruntime.so.${ORT_VERSION}
 
-# Bundle minimal runtime artifacts.
-COPY config/default.yaml ./config/default.yaml
+# Bundle runtime artifacts used by the controller and install paths.
+COPY config/ ./config/
 COPY models/ ./models/
+RUN ln -sf rl_policy.onnx.data ./models/rl_value_dense_q90_strict_seed42.onnx.data && \
+    ln -sf tft.onnx.data ./models/tft_value_dense_dualhead.onnx.data
 
 # Manifest verification is a hard startup gate in agent mode.
 

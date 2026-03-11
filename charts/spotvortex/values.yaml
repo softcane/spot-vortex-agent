@@ -73,6 +73,8 @@ agent:
     # Empty means "use .Chart.AppVersion".
     tag: ""
     pullPolicy: IfNotPresent
+    # Optional image pull secrets for private registries.
+    pullSecrets: []
   # Explicit file path for ONNX shared library inside the container.
   # This overrides image-level defaults and keeps startup deterministic.
   onnxRuntimeLibraryPath: "/usr/local/lib/onnxruntime/libonnxruntime.so.1.23.2"

@@ -124,6 +124,16 @@ Release/install proof on Kind:
 bash hack/verify-release-kind-install.sh
 ```
 
+The default verification mode is `VERIFY_MODE=local`. It builds the current repo image, loads it into Kind, and installs the in-repo chart. That is the correct runtime-proof path for this repository.
+
+For a published OCI release check, use an explicit chart version:
+
+```bash
+VERIFY_MODE=published CHART_VERSION=<chart-version> bash hack/verify-release-kind-install.sh
+```
+
+If your published image is private, set `IMAGE_PULL_SECRET_NAME=<secret>` instead of assuming anonymous GHCR pulls will work.
+
 ## Running Locally
 
 The agent expects:

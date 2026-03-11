@@ -18,6 +18,12 @@ spec:
         app.kubernetes.io/component: agent
     spec:
       serviceAccountName: {{ include "spotvortex.serviceAccountName" . }}
+      {{- with .Values.agent.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: agent
           image: "{{ .Values.agent.image.repository }}:{{ default .Chart.AppVersion .Values.agent.image.tag }}"

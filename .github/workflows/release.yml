@@ -17,6 +17,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/spot-vortex-agent
+      CHART_REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/spot-vortex-charts
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,14 +58,14 @@ jobs:
             VERSION=${{ github.ref_name }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/spot-vortex-agent:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/spot-vortex-agent:latest
+            ${{ env.IMAGE_REPOSITORY }}:${{ github.ref_name }}
+            ${{ env.IMAGE_REPOSITORY }}:latest
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
       - name: Package and push Helm chart
         run: |
-          make helm-package
+          VERSION=${{ github.ref_name }} IMAGE_REPOSITORY=${{ env.IMAGE_REPOSITORY }} make helm-package
           helm registry login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-          helm push dist/spotvortex-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push dist/spotvortex-*.tgz ${{ env.CHART_REGISTRY }}
