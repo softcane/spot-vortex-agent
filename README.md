@@ -68,7 +68,6 @@ This example is useful because it is easy to audit:
 
 These are gross compute-rate savings, not a guarantee of realized finance savings. Realized value depends on commitment utilization, whether commitments are stranded, and whether marginal spend is truly displaced.
 
-The old internal uplift chart compared one deterministic version to another. That is useful for engineering, but it is not the right first customer-facing number. A better customer-facing number is total compute savings versus the customer’s actual marginal baseline rate.
 
 ### Assumptions
 
@@ -213,5 +212,4 @@ For shadow-style local testing, use dry-run deployment settings rather than edit
 - RL is shadow-only
 - `10` minutes is the active cadence
 - manifest-verified bundle loading is required
-- simulated value claims must be labeled as simulated
 - customer-facing savings examples should be expressed against a clear baseline rate
