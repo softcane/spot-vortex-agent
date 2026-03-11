@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -77,8 +78,8 @@ func TestLoadRuntimeConfig_DefaultMaxSpotRatio(t *testing.T) {
 	if cfg.StepMinutes != 10 {
 		t.Errorf("StepMinutes should default to 10, got %v", cfg.StepMinutes)
 	}
-	if cfg.PolicyMode != PolicyModeRL {
-		t.Errorf("PolicyMode should default to %q, got %q", PolicyModeRL, cfg.PolicyMode)
+	if cfg.PolicyMode != PolicyModeDeterministic {
+		t.Errorf("PolicyMode should default to %q, got %q", PolicyModeDeterministic, cfg.PolicyMode)
 	}
 }
 
@@ -133,7 +134,7 @@ func TestClampSpotRatio(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfig_InvalidPolicyModeFallsBackToRL(t *testing.T) {
+func TestLoadRuntimeConfig_InvalidPolicyModeFallsBackToDeterministic(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "runtime.json")
 
@@ -149,8 +150,8 @@ func TestLoadRuntimeConfig_InvalidPolicyModeFallsBackToRL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig failed: %v", err)
 	}
-	if cfg.PolicyMode != PolicyModeRL {
-		t.Fatalf("expected policy mode %q, got %q", PolicyModeRL, cfg.PolicyMode)
+	if cfg.PolicyMode != PolicyModeDeterministic {
+		t.Fatalf("expected policy mode %q, got %q", PolicyModeDeterministic, cfg.PolicyMode)
 	}
 }
 
@@ -217,6 +218,73 @@ workload_profile_bounds:
 	}
 }
 
+func TestLoadRuntimeConfig_DeterministicCapRulesAndDriftAlpha(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "runtime.json")
+
+	content := `{
+		"policy_mode": "deterministic",
+		"deterministic_policy": {
+			"target_spot_ratio_drift_alpha": 0.0,
+			"priority_cap_rules": [
+				{"threshold": 0.40, "max_spot_ratio": 0.55},
+				{"threshold": 0.90, "max_spot_ratio": 0.20}
+			],
+			"startup_time_cap_rules": [
+				{"threshold": -5, "max_spot_ratio": 0.60},
+				{"threshold": 300, "max_spot_ratio": 1.20}
+			],
+			"utilization_cap_rules": [
+				{"threshold": 1.40, "max_spot_ratio": 0.70},
+				{"threshold": 0.80, "max_spot_ratio": -0.10}
+			]
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write runtime config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig failed: %v", err)
+	}
+
+	if got := cfg.DeterministicPolicy.ResolvedTargetSpotRatioDriftAlpha(); got != 0.0 {
+		t.Fatalf("expected explicit zero drift alpha to be preserved, got %.2f", got)
+	}
+
+	wantPriority := []SpotRatioCapRule{
+		{Threshold: 0.90, MaxSpotRatio: 0.20},
+		{Threshold: 0.40, MaxSpotRatio: 0.55},
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.PriorityCapRules, wantPriority) {
+		t.Fatalf("unexpected priority cap rules: got %+v want %+v", cfg.DeterministicPolicy.PriorityCapRules, wantPriority)
+	}
+
+	wantStartup := []SpotRatioCapRule{
+		{Threshold: 300, MaxSpotRatio: 1.0},
+		{Threshold: 0, MaxSpotRatio: 0.60},
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.StartupTimeCapRules, wantStartup) {
+		t.Fatalf("unexpected startup cap rules: got %+v want %+v", cfg.DeterministicPolicy.StartupTimeCapRules, wantStartup)
+	}
+
+	wantUtilization := []SpotRatioCapRule{
+		{Threshold: 1.0, MaxSpotRatio: 0.70},
+		{Threshold: 0.80, MaxSpotRatio: 0.0},
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.UtilizationCapRules, wantUtilization) {
+		t.Fatalf("unexpected utilization cap rules: got %+v want %+v", cfg.DeterministicPolicy.UtilizationCapRules, wantUtilization)
+	}
+
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.OutagePenaltyCapRules, defaultOutagePenaltyCapRules()) {
+		t.Fatalf("expected outage penalty cap defaults, got %+v", cfg.DeterministicPolicy.OutagePenaltyCapRules)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.MigrationCostCapRules, defaultMigrationCostCapRules()) {
+		t.Fatalf("expected migration cost cap defaults, got %+v", cfg.DeterministicPolicy.MigrationCostCapRules)
+	}
+}
+
 func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 	cfg := DefaultRuntimeConfig()
 	if cfg == nil {
@@ -228,14 +296,14 @@ func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 	if cfg.StepMinutes <= 0 {
 		t.Fatalf("expected positive default step minutes, got %d", cfg.StepMinutes)
 	}
-	if cfg.PolicyMode != PolicyModeRL {
-		t.Fatalf("expected default policy mode %q, got %q", PolicyModeRL, cfg.PolicyMode)
+	if cfg.PolicyMode != PolicyModeDeterministic {
+		t.Fatalf("expected default policy mode %q, got %q", PolicyModeDeterministic, cfg.PolicyMode)
 	}
-	if cfg.UseDeterministicPolicy() {
-		t.Fatal("default config should not enable deterministic policy")
+	if !cfg.UseDeterministicPolicy() {
+		t.Fatal("default config should enable deterministic policy")
 	}
-	if cfg.UseRLShadow() {
-		t.Fatal("default RL mode should not enable RL shadow")
+	if !cfg.UseRLShadow() {
+		t.Fatal("default deterministic mode should enable RL shadow when unset")
 	}
 
 	var nilCfg *RuntimeConfig
@@ -243,17 +311,58 @@ func TestDefaultRuntimeConfig_AndPolicyHelpers(t *testing.T) {
 		t.Fatal("nil config should not enable deterministic policy")
 	}
 
-	cfg.PolicyMode = PolicyModeDeterministic
-	if !cfg.UseDeterministicPolicy() {
-		t.Fatal("expected deterministic policy helper to return true")
-	}
-	if !cfg.UseRLShadow() {
-		t.Fatal("deterministic mode should enable RL shadow by default when unset")
-	}
 	disabled := false
 	cfg.RLShadowEnabled = &disabled
 	if cfg.UseRLShadow() {
 		t.Fatal("expected explicit rl_shadow_enabled=false to disable RL shadow")
+	}
+}
+
+func TestDefaultRuntimeConfig_DeterministicPolicyContractDefaults(t *testing.T) {
+	cfg := DefaultRuntimeConfig()
+
+	if got := cfg.DeterministicPolicy.ResolvedTargetSpotRatioDriftAlpha(); got != defaultTargetSpotRatioDriftAlpha {
+		t.Fatalf("unexpected default drift alpha: got %.2f want %.2f", got, defaultTargetSpotRatioDriftAlpha)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.PriorityCapRules, defaultPriorityCapRules()) {
+		t.Fatalf("unexpected default priority cap rules: %+v", cfg.DeterministicPolicy.PriorityCapRules)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.OutagePenaltyCapRules, defaultOutagePenaltyCapRules()) {
+		t.Fatalf("unexpected default outage cap rules: %+v", cfg.DeterministicPolicy.OutagePenaltyCapRules)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.StartupTimeCapRules, defaultStartupTimeCapRules()) {
+		t.Fatalf("unexpected default startup cap rules: %+v", cfg.DeterministicPolicy.StartupTimeCapRules)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.MigrationCostCapRules, defaultMigrationCostCapRules()) {
+		t.Fatalf("unexpected default migration cap rules: %+v", cfg.DeterministicPolicy.MigrationCostCapRules)
+	}
+	if !reflect.DeepEqual(cfg.DeterministicPolicy.UtilizationCapRules, defaultUtilizationCapRules()) {
+		t.Fatalf("unexpected default utilization cap rules: %+v", cfg.DeterministicPolicy.UtilizationCapRules)
+	}
+}
+
+func TestShippedRuntimeConfig_MatchesDeterministicReleaseContract(t *testing.T) {
+	configPath := filepath.Clean(filepath.Join("..", "..", "config", "runtime.json"))
+
+	cfg, err := LoadRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig(%s) failed: %v", configPath, err)
+	}
+
+	if cfg.PolicyMode != PolicyModeDeterministic {
+		t.Fatalf("PolicyMode: got %q, want %q", cfg.PolicyMode, PolicyModeDeterministic)
+	}
+	if cfg.StepMinutes != 10 {
+		t.Fatalf("StepMinutes: got %d, want 10", cfg.StepMinutes)
+	}
+	if cfg.MinSpotRatio != 0.167 {
+		t.Fatalf("MinSpotRatio: got %.3f, want 0.167", cfg.MinSpotRatio)
+	}
+	if cfg.MaxSpotRatio != 1.0 {
+		t.Fatalf("MaxSpotRatio: got %.3f, want 1.0", cfg.MaxSpotRatio)
+	}
+	if !cfg.UseRLShadow() {
+		t.Fatal("expected deterministic shipped config to keep RL shadow enabled")
 	}
 }
 
@@ -352,5 +461,58 @@ func TestFeatureBuckets_Empty(t *testing.T) {
 	b.PodStartupTimeSeconds = []float64{1}
 	if b.empty() {
 		t.Error("expected non-empty buckets to return false")
+	}
+}
+
+func TestPoolSafetyVector_DefaultAndNormalize(t *testing.T) {
+	def := DefaultPoolSafetyVector()
+	if def.SafeMaxSpotRatio != 1.0 {
+		t.Fatalf("expected default safe max spot ratio 1.0, got %.2f", def.SafeMaxSpotRatio)
+	}
+	if def.ZoneDiversificationScore != 1.0 {
+		t.Fatalf("expected default zone diversification 1.0, got %.2f", def.ZoneDiversificationScore)
+	}
+	if def.EvictablePodFraction != 1.0 {
+		t.Fatalf("expected default evictable fraction 1.0, got %.2f", def.EvictablePodFraction)
+	}
+
+	raw := PoolSafetyVector{
+		CriticalServiceSpotConcentration: 1.5,
+		StatefulPodFraction:              -0.2,
+		RestartP95Seconds:                -5,
+		RecoveryBudgetViolationRisk:      2.0,
+		SpareODHeadroomNodes:             -1,
+		ZoneDiversificationScore:         2.0,
+		EvictablePodFraction:             -1,
+		SafeMaxSpotRatio:                 1.2,
+	}
+
+	got := NormalizePoolSafetyVector(raw)
+	if got.CriticalServiceSpotConcentration != 1.0 {
+		t.Fatalf("expected concentration clamp to 1.0, got %.2f", got.CriticalServiceSpotConcentration)
+	}
+	if got.StatefulPodFraction != 0.0 {
+		t.Fatalf("expected stateful fraction clamp to 0.0, got %.2f", got.StatefulPodFraction)
+	}
+	if got.RestartP95Seconds != 0.0 {
+		t.Fatalf("expected restart clamp to 0.0, got %.2f", got.RestartP95Seconds)
+	}
+	if got.RecoveryBudgetViolationRisk != 1.0 {
+		t.Fatalf("expected recovery risk clamp to 1.0, got %.2f", got.RecoveryBudgetViolationRisk)
+	}
+	if got.SpareODHeadroomNodes != 0.0 {
+		t.Fatalf("expected headroom clamp to 0.0, got %.2f", got.SpareODHeadroomNodes)
+	}
+	if got.ZoneDiversificationScore != 1.0 {
+		t.Fatalf("expected zone score clamp to 1.0, got %.2f", got.ZoneDiversificationScore)
+	}
+	if got.EvictablePodFraction != 0.0 {
+		t.Fatalf("expected evictable fraction clamp to 0.0, got %.2f", got.EvictablePodFraction)
+	}
+	if got.SafeMaxSpotRatio != 1.0 {
+		t.Fatalf("expected safe max clamp to 1.0, got %.2f", got.SafeMaxSpotRatio)
+	}
+	if !(PoolSafetyVector{}).IsZero() {
+		t.Fatal("expected zero vector to report IsZero=true")
 	}
 }

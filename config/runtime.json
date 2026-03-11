@@ -1,21 +1,46 @@
 {
   "risk_multiplier": 1.0,
-  "min_spot_ratio": 0.0,
+  "min_spot_ratio": 0.167,
   "max_spot_ratio": 1.0,
   "target_spot_ratio": 0.5,
-  "step_minutes": 30,
-  "policy_mode": "rl",
+  "step_minutes": 10,
+  "policy_mode": "deterministic",
   "deterministic_policy": {
-    "emergency_risk_threshold": 0.9,
-    "runtime_emergency_threshold": 0.8,
-    "high_risk_threshold": 0.6,
-    "medium_risk_threshold": 0.35,
-    "min_savings_ratio_for_increase": 0.15,
-    "max_payback_hours_for_increase": 6.0,
+    "emergency_risk_threshold": 0.891,
+    "runtime_emergency_threshold": 0.865,
+    "high_risk_threshold": 0.782,
+    "medium_risk_threshold": 0.58,
+    "min_savings_ratio_for_increase": 0.249,
+    "max_payback_hours_for_increase": 6.372,
     "ood_mode": "conservative",
-    "ood_max_risk_for_increase": 0.25,
-    "ood_min_savings_ratio_for_increase": 0.25,
-    "ood_max_payback_hours_for_increase": 3.0,
+    "ood_max_risk_for_increase": 0.189,
+    "ood_min_savings_ratio_for_increase": 0.334,
+    "ood_max_payback_hours_for_increase": 2.189,
+    "target_spot_ratio_drift_alpha": 0.1,
+    "priority_cap_rules": [
+      { "threshold": 0.9, "max_spot_ratio": 0.2 },
+      { "threshold": 0.7, "max_spot_ratio": 0.5 },
+      { "threshold": 0.45, "max_spot_ratio": 0.8 }
+    ],
+    "outage_penalty_cap_rules": [
+      { "threshold": 96.0, "max_spot_ratio": 0.1 },
+      { "threshold": 48.0, "max_spot_ratio": 0.2 },
+      { "threshold": 24.0, "max_spot_ratio": 0.3 },
+      { "threshold": 10.0, "max_spot_ratio": 0.5 }
+    ],
+    "startup_time_cap_rules": [
+      { "threshold": 600.0, "max_spot_ratio": 0.2 },
+      { "threshold": 300.0, "max_spot_ratio": 0.3 },
+      { "threshold": 120.0, "max_spot_ratio": 0.5 }
+    ],
+    "migration_cost_cap_rules": [
+      { "threshold": 8.0, "max_spot_ratio": 0.2 },
+      { "threshold": 5.0, "max_spot_ratio": 0.3 },
+      { "threshold": 2.0, "max_spot_ratio": 0.6 }
+    ],
+    "utilization_cap_rules": [
+      { "threshold": 0.95, "max_spot_ratio": 0.7 }
+    ],
     "feature_buckets": {
       "source": "config/workload_distributions.yaml"
     }

@@ -158,3 +158,41 @@ func TestVerifyManifestArtifactsMismatch(t *testing.T) {
 		t.Fatalf("expected checksum mismatch error, got: %v", err)
 	}
 }
+
+func TestShippedModelBundleManifest_VerifiesCurrentArtifacts(t *testing.T) {
+	modelsDir := filepath.Clean(filepath.Join("..", "..", "models"))
+	manifestPath := filepath.Join(modelsDir, "MODEL_MANIFEST.json")
+	tftPath := filepath.Join(modelsDir, "tft.onnx")
+	rlPath := filepath.Join(modelsDir, "rl_policy.onnx")
+
+	required := []string{manifestPath, tftPath, rlPath}
+	for _, path := range required {
+		if _, err := os.Stat(path); err != nil {
+			t.Skipf("required shipped artifact missing (%s): %v", path, err)
+		}
+	}
+
+	contract, err := LoadModelContract(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadModelContract(%s) failed: %v", manifestPath, err)
+	}
+	if contract == nil {
+		t.Fatal("expected shipped manifest to produce a contract")
+	}
+	if contract.Cloud != "aws" {
+		t.Fatalf("expected shipped manifest cloud aws, got %q", contract.Cloud)
+	}
+	if len(contract.SupportedInstanceFamilies) == 0 {
+		t.Fatal("expected shipped manifest to declare supported instance families")
+	}
+	if contract.ArtifactChecksums["tft.onnx"] == "" {
+		t.Fatal("expected shipped manifest to include checksum for tft.onnx")
+	}
+	if contract.ArtifactChecksums["tft.onnx.data"] == "" {
+		t.Fatal("expected shipped manifest to include checksum for tft.onnx.data")
+	}
+
+	if err := VerifyManifestArtifacts(manifestPath, tftPath, rlPath); err != nil {
+		t.Fatalf("VerifyManifestArtifacts(%s) failed: %v", manifestPath, err)
+	}
+}

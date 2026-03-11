@@ -57,8 +57,6 @@ type InferenceEngine struct {
 	scope    *ModelContract
 
 	builder *FeatureBuilder
-
-	runtimeHeadWarned bool
 }
 
 // RLFallbackError means TFT scores were computed but RL action selection failed.
@@ -101,7 +99,6 @@ type EngineConfig struct {
 	ModelManifestPath    string
 	ExpectedCloud        string
 	RequireModelContract bool
-	RequireRuntimeHead   bool
 	Logger               *slog.Logger
 }
 
@@ -153,26 +150,10 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 		logger.Warn("ONNX Runtime already initialized or failed", "error", err)
 	}
 
-	// Load models using our low-level Model wrapper.
-	// Prefer dual-head TFT export and fall back to legacy single-output variants
-	// only when runtime head is not required.
+	// Load models using the shipped dual-head TFT contract.
 	tft, err := NewModel(cfg.TFTModelPath, []string{"input"}, []string{"capacity_score", "runtime_score"})
 	if err != nil {
-		if cfg.RequireRuntimeHead {
-			return nil, fmt.Errorf("failed to load dual-head TFT model (required output names: capacity_score,runtime_score): %w", err)
-		}
-		tft, err = NewModel(cfg.TFTModelPath, []string{"input"}, []string{"capacity_score"})
-		if err != nil {
-			tft, err = NewModel(cfg.TFTModelPath, []string{"input"}, []string{"output"})
-			if err != nil {
-				return nil, fmt.Errorf("failed to load TFT model: %w", err)
-			}
-			logger.Warn("TFT output name mismatch; falling back to legacy output name",
-				"output_name", "output",
-			)
-		} else {
-			logger.Warn("TFT model loaded without runtime head; runtime_score will be unavailable")
-		}
+		return nil, fmt.Errorf("failed to load TFT model with outputs capacity_score,runtime_score: %w", err)
 	}
 
 	rl, err := NewModel(cfg.RLModelPath, []string{"state"}, []string{"q_values"})
@@ -218,7 +199,7 @@ func NewInferenceEngine(cfg EngineConfig) (*InferenceEngine, error) {
 		builder:  NewFeatureBuilder(),
 	}
 
-	if err := engine.validateModelContracts(cfg.RequireRuntimeHead); err != nil {
+	if err := engine.validateModelContracts(); err != nil {
 		engine.Close()
 		return nil, err
 	}
@@ -258,7 +239,7 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 	}
 	defer destroyTensorMap(tftOutputs)
 
-	rawScore, rawRuntimeScore, hasRuntimeScore, err := extractRiskScores(tftOutputs)
+	rawScore, rawRuntimeScore, err := extractRiskScores(tftOutputs)
 	if err != nil {
 		return ActionHold, 0, 0, 0, err
 	}
@@ -305,7 +286,7 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 	}
 
 	runtimeScore := float64(rawRuntimeScore)
-	if hasRuntimeScore && riskMultiplier != 1.0 {
+	if riskMultiplier != 1.0 {
 		if runtimeScore < 1e-6 {
 			runtimeScore = 1e-6
 		} else if runtimeScore > 1.0-1e-6 {
@@ -315,15 +296,8 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 		adjustedOdds := math.Pow(odds, riskMultiplier)
 		runtimeScore = adjustedOdds / (1.0 + adjustedOdds)
 	}
-	if !hasRuntimeScore {
-		runtimeScore = 0.0
-		if !e.runtimeHeadWarned {
-			e.logger.Warn("TFT ONNX has no runtime head; runtime_score feature is set to 0.0")
-			e.runtimeHeadWarned = true
-		}
-	}
 
-	// Ensure RL input reflects runtime risk when the ONNX model provides it.
+	// Ensure RL input reflects runtime risk from the TFT runtime head.
 	state.RuntimeScore = runtimeScore
 
 	// 3. Build RL Input (13 features)
@@ -388,7 +362,7 @@ func (e *InferenceEngine) PredictDetailed(ctx context.Context, nodeID string, st
 	return bestAction, float32(finalScore), float32(runtimeScore), confidence, nil
 }
 
-func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error {
+func (e *InferenceEngine) validateModelContracts() error {
 	seedHistory := []float64{0.31, 0.32, 0.30, 0.29, 0.31, 0.33, 0.34, 0.33, 0.32, 0.31, 0.30, 0.29}
 	contractState := NodeState{
 		SpotPrice:          0.31,
@@ -423,7 +397,7 @@ func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error 
 	}
 	defer destroyTensorMap(tftOutputs)
 
-	if err := validateTFTOutputContract(tftOutputs, requireRuntimeHead); err != nil {
+	if err := validateTFTOutputContract(tftOutputs); err != nil {
 		return err
 	}
 
@@ -449,13 +423,10 @@ func (e *InferenceEngine) validateModelContracts(requireRuntimeHead bool) error 
 	return nil
 }
 
-func validateTFTOutputContract(tftOutputs map[string]*ort.Tensor[float32], requireRuntimeHead bool) error {
-	_, _, hasRuntimeHead, err := extractRiskScores(tftOutputs)
+func validateTFTOutputContract(tftOutputs map[string]*ort.Tensor[float32]) error {
+	_, _, err := extractRiskScores(tftOutputs)
 	if err != nil {
 		return fmt.Errorf("TFT model contract check failed: %w", err)
-	}
-	if requireRuntimeHead && !hasRuntimeHead {
-		return fmt.Errorf("TFT model contract check failed: runtime head is required but missing")
 	}
 	return nil
 }
@@ -484,44 +455,41 @@ func destroyTensorMap(tensors map[string]*ort.Tensor[float32]) {
 	}
 }
 
-func extractRiskScores(outputs map[string]*ort.Tensor[float32]) (float32, float32, bool, error) {
-	out, ok := outputs["capacity_score"]
-	if !ok {
-		out = outputs["output"]
-	}
-	if out == nil {
-		return 0, 0, false, fmt.Errorf("TFT output missing: expected capacity_score or output")
+func extractRiskScores(outputs map[string]*ort.Tensor[float32]) (float32, float32, error) {
+	capacityTensor, ok := outputs["capacity_score"]
+	if !ok || capacityTensor == nil {
+		return 0, 0, fmt.Errorf("TFT output missing: capacity_score")
 	}
 
-	data := out.GetData()
+	runtimeTensor, ok := outputs["runtime_score"]
+	if !ok || runtimeTensor == nil {
+		return 0, 0, fmt.Errorf("TFT output missing: runtime_score")
+	}
+
+	capacity, err := extractRiskScoreValue(capacityTensor)
+	if err != nil {
+		return 0, 0, fmt.Errorf("capacity_score: %w", err)
+	}
+
+	runtime, err := extractRiskScoreValue(runtimeTensor)
+	if err != nil {
+		return 0, 0, fmt.Errorf("runtime_score: %w", err)
+	}
+
+	return capacity, runtime, nil
+}
+
+func extractRiskScoreValue(tensor *ort.Tensor[float32]) (float32, error) {
+	if tensor == nil {
+		return 0, fmt.Errorf("tensor is nil")
+	}
+
+	data := tensor.GetData()
 	if len(data) == 0 {
-		return 0, 0, false, fmt.Errorf("TFT output empty")
+		return 0, fmt.Errorf("tensor is empty")
 	}
 
-	shape := out.GetShape()
-	extractScalar := func(t *ort.Tensor[float32]) (float32, bool) {
-		if t == nil {
-			return 0, false
-		}
-		d := t.GetData()
-		if len(d) == 0 {
-			return 0, false
-		}
-		return d[0], true
-	}
-
-	// Prefer explicit runtime head output if exported.
-	if rt, ok := outputs["runtime_score"]; ok {
-		if capacity, runtime, hasRuntime, ok := extractRiskScoresFromTensor(out, rt); ok {
-			return capacity, runtime, hasRuntime, nil
-		}
-	}
-	if rt, ok := outputs["runtime_prob"]; ok {
-		if capacity, runtime, hasRuntime, ok := extractRiskScoresFromTensor(out, rt); ok {
-			return capacity, runtime, hasRuntime, nil
-		}
-	}
-
+	shape := tensor.GetShape()
 	if len(shape) == 3 && shape[1] > 0 && shape[2] > 0 {
 		horizon := int(shape[1])
 		quantiles := int(shape[2])
@@ -529,45 +497,23 @@ func extractRiskScores(outputs map[string]*ort.Tensor[float32]) (float32, float3
 		if leadSteps >= horizon {
 			leadSteps = horizon - 1
 		}
-		medianIdx := quantiles / 2
-		offset := leadSteps*quantiles + medianIdx
+		offset := leadSteps*quantiles + quantiles/2
 		if offset >= 0 && offset < len(data) {
-			return data[offset], 0, false, nil
+			return data[offset], nil
 		}
+		return 0, fmt.Errorf("tensor shape %v produced invalid offset %d", shape, offset)
 	}
 
 	if len(shape) == 2 && shape[1] > 0 {
 		width := int(shape[1])
-		// Prefer explicit [capacity, runtime] layout when available.
-		if width >= 2 && len(data) >= 2 {
-			return data[0], data[1], true, nil
-		}
 		idx := width / 2
 		if idx >= 0 && idx < len(data) {
-			return data[idx], 0, false, nil
+			return data[idx], nil
 		}
+		return 0, fmt.Errorf("tensor shape %v produced invalid index %d", shape, idx)
 	}
 
-	// Final fallback: capacity only.
-	if runtimeScalar, ok := extractScalar(outputs["runtime_score"]); ok {
-		return data[0], runtimeScalar, true, nil
-	}
-	return data[0], 0, false, nil
-}
-
-func extractRiskScoresFromTensor(capacityTensor, runtimeTensor *ort.Tensor[float32]) (float32, float32, bool, bool) {
-	if capacityTensor == nil {
-		return 0, 0, false, false
-	}
-	capacityData := capacityTensor.GetData()
-	if len(capacityData) == 0 {
-		return 0, 0, false, false
-	}
-	runtimeData := runtimeTensor.GetData()
-	if len(runtimeData) == 0 {
-		return capacityData[0], 0, false, true
-	}
-	return capacityData[0], runtimeData[0], true, true
+	return data[0], nil
 }
 
 // Close releases model resources.

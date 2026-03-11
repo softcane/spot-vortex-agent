@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "generated_at": "2026-02-22T09:20:45Z",
+  "generated_at": "2026-03-11T08:13:57Z",
   "cloud": "aws",
   "supported_instance_families": [
     "c5",
@@ -132,11 +132,11 @@
   "artifacts": {
     "tft.onnx": {
       "path": "tft.onnx",
-      "sha256": "ef4044e0ce4aa0c74e604929530d24dfe80fa9c40f438282a229bcf7b59bfead"
+      "sha256": "ee81a39483df041e64852f7e6a952629e407340a6d14f80bbf00e487a731fbea"
     },
     "tft.onnx.data": {
       "path": "tft.onnx.data",
-      "sha256": "0ba770c899824a4d00b01864ba1e7bcb19a2c711ff6bd5b9c06d314dfa7e69b7"
+      "sha256": "ba75b8ff50461059c16342cae317b10289b9738b4a60616ac752b713de543a38"
     },
     "rl_policy.onnx": {
       "path": "rl_policy.onnx",
@@ -145,10 +145,14 @@
     "rl_policy.onnx.data": {
       "path": "rl_policy.onnx.data",
       "sha256": "ee5b98d3972bf55ca9531df63abd36908059c3007860a863e46c69ac3e6dcfc7"
+    },
+    "rl_value_dense_q90_strict_seed42.onnx.data": {
+      "path": "rl_value_dense_q90_strict_seed42.onnx.data",
+      "sha256": "ee5b98d3972bf55ca9531df63abd36908059c3007860a863e46c69ac3e6dcfc7"
     }
   },
   "parity": {
     "status": "validated_in_export_script",
-    "notes": "TFT/RL ONNX load checks run in this export pipeline."
+    "notes": "2026-03-11 handoff uses the transition-aware TFT and the runtime-compatible RL ONNX bundle, including the retained RL sidecar alias."
   }
 }

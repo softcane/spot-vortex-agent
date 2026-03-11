@@ -10,13 +10,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/softcane/spot-vortex-agent/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -28,6 +31,7 @@ type WorkloadFeatures struct {
 	OutagePenaltyHours float64 // Weighted average for inference
 	PriorityScore      float64 // Weighted average 0-1 scale for inference
 	ClusterUtilization float64 // Pool-level utilization
+	PoolSafety         config.PoolSafetyVector
 
 	// Max values for guardrails - a single critical pod triggers safety checks
 	MaxOutagePenalty float64 // MAX across all pods (for guardrails)
@@ -95,12 +99,62 @@ func (c *Collector) Collect(ctx context.Context) (*LocalMetrics, error) {
 		return nil, err
 	}
 
-	nodeToPool := make(map[string]string)
-	poolNodes := make(map[string][]string)
+	nodeToPools := make(map[string][]string)
+	nodeIsSpot := make(map[string]bool)
+	groupZones := make(map[string]map[string]struct{})
+	poolStats := make(map[string]*poolAccumulator)
 	for _, node := range nodes.Items {
-		poolID := GetNodePoolID(&node)
-		nodeToPool[node.Name] = poolID
-		poolNodes[poolID] = append(poolNodes[poolID], node.Name)
+		simplePoolID := GetNodePoolID(&node)
+		extendedPoolID := GetExtendedPoolID(&node)
+		poolKeys := []string{simplePoolID}
+		if extendedPoolID != simplePoolID {
+			poolKeys = append(poolKeys, extendedPoolID)
+		}
+		nodeToPools[node.Name] = poolKeys
+		nodeIsSpot[node.Name] = node.Labels["karpenter.sh/capacity-type"] == "spot"
+
+		zone := node.Labels["topology.kubernetes.io/zone"]
+		if zone == "" {
+			zone = "unknown"
+		}
+		instanceType := node.Labels["node.kubernetes.io/instance-type"]
+		if instanceType == "" {
+			instanceType = "unknown"
+		}
+		workloadPool := node.Labels[WorkloadPoolLabel]
+
+		simpleGroupKey := "instance:" + instanceType
+		if _, ok := groupZones[simpleGroupKey]; !ok {
+			groupZones[simpleGroupKey] = make(map[string]struct{})
+		}
+		groupZones[simpleGroupKey][zone] = struct{}{}
+
+		for _, poolID := range poolKeys {
+			acc, ok := poolStats[poolID]
+			if !ok {
+				acc = &poolAccumulator{
+					pdbNodeCounts: make(map[string]map[string]int),
+					pdbSlack:      make(map[string]int32),
+				}
+				poolStats[poolID] = acc
+			}
+			acc.utilizationKey = simplePoolID
+			if poolID == simplePoolID {
+				acc.groupKey = simpleGroupKey
+			} else {
+				workloadGroupKey := "workload:" + workloadPool
+				acc.groupKey = workloadGroupKey
+				if _, ok := groupZones[workloadGroupKey]; !ok {
+					groupZones[workloadGroupKey] = make(map[string]struct{})
+				}
+				groupZones[workloadGroupKey][zone] = struct{}{}
+			}
+			if nodeIsSpot[node.Name] {
+				acc.spotNodes++
+			} else {
+				acc.odNodes++
+			}
+		}
 	}
 
 	// 2. List Pods & PDBs
@@ -116,11 +170,21 @@ func (c *Collector) Collect(ctx context.Context) (*LocalMetrics, error) {
 	// Map PDBs by namespace (simplified) or label selector (complex, skip for MVP)
 	// MVP: Check if namespace has any restricted PDB
 	nsRestricted := make(map[string]bool)
+	pdbsByNamespace := make(map[string][]compiledPDB)
 	if pdbs != nil {
 		for _, pdb := range pdbs.Items {
 			if pdb.Status.CurrentHealthy <= pdb.Status.DesiredHealthy {
 				nsRestricted[pdb.Namespace] = true
 			}
+			selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+			if err != nil {
+				continue
+			}
+			pdbsByNamespace[pdb.Namespace] = append(pdbsByNamespace[pdb.Namespace], compiledPDB{
+				key:                pdb.Namespace + "/" + pdb.Name,
+				disruptionsAllowed: pdb.Status.DisruptionsAllowed,
+				selector:           selector,
+			})
 		}
 	}
 
@@ -149,48 +213,77 @@ func (c *Collector) Collect(ctx context.Context) (*LocalMetrics, error) {
 	}
 
 	// 3. Aggregate per Pool
-	poolStats := make(map[string]*poolAccumulator)
-
 	for _, pod := range pods.Items {
 		if pod.Spec.NodeName == "" {
 			continue
 		}
-		poolID, ok := nodeToPool[pod.Spec.NodeName]
+		poolIDs, ok := nodeToPools[pod.Spec.NodeName]
 		if !ok {
 			continue // Pod on unknown node?
 		}
 
-		if _, exists := poolStats[poolID]; !exists {
-			poolStats[poolID] = &poolAccumulator{}
-		}
-		acc := poolStats[poolID]
-
 		// Startup Time (annotation override supported)
 		latency := getStartupTimeWithOverride(&pod)
-		if latency > 0 {
-			weight := getPodWeight(&pod)
-			acc.latencies = append(acc.latencies, weightedValue{val: latency, weight: weight})
-		}
+		weight := getPodWeight(&pod)
 
 		// Outage Penalty (annotation override supported, weighted by CPU for inference, MAX for guardrails)
 		penalty := getOutagePenaltyWithOverride(&pod, nsRestricted[pod.Namespace], rsReplicas)
-		weight := getPodWeight(&pod)
-		acc.penalties = append(acc.penalties, weightedValue{val: penalty, weight: weight})
-		if penalty > acc.maxPenalty {
-			acc.maxPenalty = penalty
-		}
 
 		// Priority Score (P0=1.0, P1=0.75, P2=0.5, P3=0.25)
 		// weighted by CPU for inference, MAX for guardrails
 		pScore := getPriorityScore(&pod)
-		acc.priorities = append(acc.priorities, weightedValue{val: pScore, weight: weight})
-		if pScore > acc.maxPriority {
-			acc.maxPriority = pScore
-		}
+		isCritical := isCriticalServicePod(&pod, pScore)
+		isStateful := isStatefulPod(&pod)
+		workloadRelevant := isWorkloadPod(&pod)
+		matchedPDB := matchPDBForPod(&pod, pdbsByNamespace[pod.Namespace])
+		evictable := workloadRelevant && (matchedPDB == nil || matchedPDB.disruptionsAllowed > 0)
 
-		// Track if any critical pod exists (for guardrails)
-		if pScore >= 1.0 {
-			acc.hasCriticalPod = true
+		for _, poolID := range poolIDs {
+			acc, exists := poolStats[poolID]
+			if !exists {
+				acc = &poolAccumulator{
+					pdbNodeCounts: make(map[string]map[string]int),
+					pdbSlack:      make(map[string]int32),
+				}
+				poolStats[poolID] = acc
+			}
+			if latency > 0 {
+				acc.latencies = append(acc.latencies, weightedValue{val: latency, weight: weight})
+			}
+			acc.penalties = append(acc.penalties, weightedValue{val: penalty, weight: weight})
+			if penalty > acc.maxPenalty {
+				acc.maxPenalty = penalty
+			}
+			acc.priorities = append(acc.priorities, weightedValue{val: pScore, weight: weight})
+			if pScore > acc.maxPriority {
+				acc.maxPriority = pScore
+			}
+			if pScore >= 1.0 {
+				acc.hasCriticalPod = true
+			}
+
+			if workloadRelevant {
+				acc.workloadPods++
+				if isStateful {
+					acc.statefulPods++
+				}
+				if evictable {
+					acc.evictablePods++
+				}
+				if isCritical {
+					acc.criticalPods++
+					if nodeIsSpot[pod.Spec.NodeName] {
+						acc.criticalOnSpot++
+					}
+				}
+			}
+			if matchedPDB != nil {
+				if _, ok := acc.pdbNodeCounts[matchedPDB.key]; !ok {
+					acc.pdbNodeCounts[matchedPDB.key] = make(map[string]int)
+				}
+				acc.pdbNodeCounts[matchedPDB.key][pod.Spec.NodeName]++
+				acc.pdbSlack[matchedPDB.key] = matchedPDB.disruptionsAllowed
+			}
 		}
 	}
 
@@ -228,17 +321,20 @@ func (c *Collector) Collect(ctx context.Context) (*LocalMetrics, error) {
 
 		// Get pool utilization (falls back to "default" or 0.5)
 		util := 0.5 // Default: assume 50% utilization
-		if u, ok := poolUtilization[poolID]; ok {
+		if u, ok := poolUtilization[acc.utilizationKey]; ok {
 			util = u
 		} else if u, ok := poolUtilization["default"]; ok {
 			util = u // Use cluster-wide default if available
 		}
+
+		poolSafety := computePoolSafetyVector(acc, util, len(groupZones[acc.groupKey]), p95)
 
 		newFeatures[poolID] = WorkloadFeatures{
 			PodStartupTime:     p95,
 			OutagePenaltyHours: avgPenalty,  // Weighted avg for inference
 			PriorityScore:      avgPriority, // Weighted avg for inference
 			ClusterUtilization: util,        // From Prometheus/metrics-server
+			PoolSafety:         poolSafety,
 			MaxOutagePenalty:   maxPenalty,  // MAX for guardrails
 			MaxPriorityScore:   maxPriority, // MAX for guardrails
 			HasCriticalPod:     acc.hasCriticalPod,
@@ -271,8 +367,8 @@ const (
 	AnnotationMigrationTier = "spotvortex.io/migration-tier"
 )
 
-// GetNodePoolID generates "InstanceType:Zone" for backward compatibility.
-// For production with multiple workload pools, use GetExtendedPoolID instead.
+// GetNodePoolID generates the simple "InstanceType:Zone" pool ID.
+// Use GetExtendedPoolID when workload pool partitioning is enabled.
 func GetNodePoolID(node *corev1.Node) string {
 	zone := node.Labels["topology.kubernetes.io/zone"]
 	it := node.Labels["node.kubernetes.io/instance-type"]
@@ -320,6 +416,7 @@ func (c *Collector) GetPoolFeatures(poolID string) WorkloadFeatures {
 		PodStartupTime:     300.0,
 		OutagePenaltyHours: 5.0, // Weighted avg for inference
 		PriorityScore:      0.5, // P2 - weighted avg for inference
+		PoolSafety:         config.DefaultPoolSafetyVector(),
 		MaxOutagePenalty:   5.0, // MAX for guardrails
 		MaxPriorityScore:   0.5, // P2 - MAX for guardrails
 		HasCriticalPod:     false,
@@ -344,6 +441,24 @@ type poolAccumulator struct {
 	maxPenalty     float64
 	maxPriority    float64
 	hasCriticalPod bool // P0/system-critical pod detected
+
+	groupKey       string
+	utilizationKey string
+	spotNodes      int
+	odNodes        int
+	workloadPods   int
+	statefulPods   int
+	evictablePods  int
+	criticalPods   int
+	criticalOnSpot int
+	pdbNodeCounts  map[string]map[string]int
+	pdbSlack       map[string]int32
+}
+
+type compiledPDB struct {
+	key                string
+	disruptionsAllowed int32
+	selector           labels.Selector
 }
 
 func getPodStartupLatency(pod *corev1.Pod) float64 {
@@ -411,6 +526,242 @@ func calculateWeightedAverage(values []weightedValue) float64 {
 		return 0
 	}
 	return weightedSum / totalWeight
+}
+
+func computePoolSafetyVector(acc *poolAccumulator, util float64, zoneCount int, restartP95Seconds float64) config.PoolSafetyVector {
+	vector := config.DefaultPoolSafetyVector()
+	if acc == nil {
+		return vector
+	}
+
+	util = clampUnit(util)
+	vector.RestartP95Seconds = restartP95Seconds
+	vector.SpareODHeadroomNodes = math.Max(0, float64(acc.odNodes)*(1.0-util))
+	vector.ZoneDiversificationScore = computeZoneDiversificationScore(zoneCount)
+
+	if acc.workloadPods == 0 {
+		return config.NormalizePoolSafetyVector(vector)
+	}
+
+	if acc.criticalPods > 0 {
+		vector.CriticalServiceSpotConcentration = float64(acc.criticalOnSpot) / float64(acc.criticalPods)
+	}
+	if acc.workloadPods > 0 {
+		vector.StatefulPodFraction = float64(acc.statefulPods) / float64(acc.workloadPods)
+		vector.EvictablePodFraction = float64(acc.evictablePods) / float64(acc.workloadPods)
+	}
+	vector.MinPDBSlackIfOneNodeLost, vector.MinPDBSlackIfTwoNodesLost = computePDBSlackBounds(acc)
+	vector.RecoveryBudgetViolationRisk = computeRecoveryBudgetViolationRisk(vector)
+	vector.SafeMaxSpotRatio = computeSafeMaxSpotRatio(vector)
+	return config.NormalizePoolSafetyVector(vector)
+}
+
+func computePDBSlackBounds(acc *poolAccumulator) (float64, float64) {
+	if acc == nil || len(acc.pdbNodeCounts) == 0 {
+		return 0, 0
+	}
+	minOne := math.Inf(1)
+	minTwo := math.Inf(1)
+
+	for pdbKey, nodeCounts := range acc.pdbNodeCounts {
+		allowed := float64(acc.pdbSlack[pdbKey])
+		var maxOne, maxTwo int
+		for _, count := range nodeCounts {
+			if count >= maxOne {
+				maxTwo = maxOne
+				maxOne = count
+				continue
+			}
+			if count > maxTwo {
+				maxTwo = count
+			}
+		}
+
+		slackOne := allowed - float64(maxOne)
+		slackTwo := allowed - float64(maxOne+maxTwo)
+		if slackOne < minOne {
+			minOne = slackOne
+		}
+		if slackTwo < minTwo {
+			minTwo = slackTwo
+		}
+	}
+
+	if math.IsInf(minOne, 1) {
+		minOne = 0
+	}
+	if math.IsInf(minTwo, 1) {
+		minTwo = 0
+	}
+	return minOne, minTwo
+}
+
+func computeZoneDiversificationScore(zoneCount int) float64 {
+	switch {
+	case zoneCount >= 3:
+		return 1.0
+	case zoneCount == 2:
+		return 0.5
+	case zoneCount == 1:
+		return 0.0
+	default:
+		return 0.0
+	}
+}
+
+func computeRecoveryBudgetViolationRisk(v config.PoolSafetyVector) float64 {
+	risk := 0.0
+
+	if v.MinPDBSlackIfOneNodeLost < 0 {
+		risk = math.Max(risk, 0.95)
+	} else if v.MinPDBSlackIfOneNodeLost < 1 {
+		risk = math.Max(risk, 0.70)
+	}
+
+	if v.MinPDBSlackIfTwoNodesLost < 0 {
+		risk = math.Max(risk, 0.85)
+	} else if v.MinPDBSlackIfTwoNodesLost < 1 {
+		risk = math.Max(risk, 0.55)
+	}
+
+	if v.CriticalServiceSpotConcentration > 0 {
+		risk = math.Max(risk, clampUnit(0.20+0.80*v.CriticalServiceSpotConcentration))
+	}
+	if v.StatefulPodFraction > 0 {
+		risk = math.Max(risk, clampUnit(0.15+0.65*v.StatefulPodFraction))
+	}
+	if v.RestartP95Seconds >= 600 {
+		risk = math.Max(risk, 0.75)
+	} else if v.RestartP95Seconds >= 300 {
+		risk = math.Max(risk, 0.50)
+	} else if v.RestartP95Seconds >= 120 {
+		risk = math.Max(risk, 0.30)
+	}
+	if v.SpareODHeadroomNodes < 1 {
+		risk = math.Max(risk, 0.55)
+	}
+	risk = math.Max(risk, clampUnit((1.0-v.ZoneDiversificationScore)*0.60))
+	risk = math.Max(risk, clampUnit((1.0-v.EvictablePodFraction)*0.85))
+
+	return clampUnit(risk)
+}
+
+func computeSafeMaxSpotRatio(v config.PoolSafetyVector) float64 {
+	cap := 1.0
+
+	switch {
+	case v.CriticalServiceSpotConcentration >= 0.80:
+		cap = math.Min(cap, 0.10)
+	case v.CriticalServiceSpotConcentration >= 0.50:
+		cap = math.Min(cap, 0.25)
+	case v.CriticalServiceSpotConcentration >= 0.25:
+		cap = math.Min(cap, 0.50)
+	}
+
+	switch {
+	case v.MinPDBSlackIfOneNodeLost < 0:
+		cap = math.Min(cap, 0.10)
+	case v.MinPDBSlackIfOneNodeLost < 1:
+		cap = math.Min(cap, 0.35)
+	}
+
+	switch {
+	case v.MinPDBSlackIfTwoNodesLost < 0:
+		cap = math.Min(cap, 0.25)
+	case v.MinPDBSlackIfTwoNodesLost < 1:
+		cap = math.Min(cap, 0.50)
+	}
+
+	switch {
+	case v.StatefulPodFraction >= 0.50:
+		cap = math.Min(cap, 0.50)
+	case v.StatefulPodFraction >= 0.25:
+		cap = math.Min(cap, 0.70)
+	}
+
+	switch {
+	case v.RestartP95Seconds >= 600:
+		cap = math.Min(cap, 0.25)
+	case v.RestartP95Seconds >= 300:
+		cap = math.Min(cap, 0.50)
+	}
+
+	switch {
+	case v.RecoveryBudgetViolationRisk >= 0.90:
+		cap = math.Min(cap, 0.10)
+	case v.RecoveryBudgetViolationRisk >= 0.75:
+		cap = math.Min(cap, 0.25)
+	case v.RecoveryBudgetViolationRisk >= 0.60:
+		cap = math.Min(cap, 0.40)
+	}
+
+	if v.SpareODHeadroomNodes < 1 {
+		cap = math.Min(cap, 0.60)
+	}
+	if v.ZoneDiversificationScore < 0.50 {
+		cap = math.Min(cap, 0.60)
+	}
+	if v.EvictablePodFraction < 0.25 {
+		cap = math.Min(cap, 0.20)
+	} else if v.EvictablePodFraction < 0.50 {
+		cap = math.Min(cap, 0.40)
+	}
+
+	return clampUnit(cap)
+}
+
+func clampUnit(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func isStatefulPod(pod *corev1.Pod) bool {
+	for _, own := range pod.OwnerReferences {
+		if own.Kind == "StatefulSet" {
+			return true
+		}
+	}
+	return false
+}
+
+func isCriticalServicePod(pod *corev1.Pod, priorityScore float64) bool {
+	if pod != nil && pod.Annotations["spotvortex.io/critical"] == "true" {
+		return true
+	}
+	return priorityScore >= 0.75
+}
+
+func isWorkloadPod(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	for _, own := range pod.OwnerReferences {
+		if own.Kind == "DaemonSet" {
+			return false
+		}
+	}
+	return pod.Spec.NodeName != ""
+}
+
+func matchPDBForPod(pod *corev1.Pod, pdbs []compiledPDB) *compiledPDB {
+	if pod == nil {
+		return nil
+	}
+	for _, pdb := range pdbs {
+		if pdb.selector == nil || pdb.selector.Empty() {
+			continue
+		}
+		if pdb.selector.Matches(labels.Set(pod.Labels)) {
+			match := pdb
+			return &match
+		}
+	}
+	return nil
 }
 
 func calculateOutagePenalty(pod *corev1.Pod, restricted bool, rsReplicas map[string]int32) float64 {

@@ -15,7 +15,113 @@ const (
 	PolicyModeRL = "rl"
 	// PolicyModeDeterministic enables TFT-risk + deterministic workload policy.
 	PolicyModeDeterministic = "deterministic"
+
+	defaultTargetSpotRatioDriftAlpha = 0.10
 )
+
+// PoolSafetyVector is the shared runtime contract for pool-level blast-radius
+// signals. The runtime computes and consumes this locally; it is not a model
+// input for TFT and it does not imply pod-level actuation.
+//
+// Field status for Phase 1:
+// - live: directly measured or approximated from local cluster state now
+// - derived_live: computed from other live fields now
+// - default: neutral value used only when pool telemetry is absent
+type PoolSafetyVector struct {
+	// CriticalServiceSpotConcentration is the share (0..1) of critical-service
+	// pods in the pool that currently run on spot nodes.
+	// Phase 1 status: live approximation from pod priority or critical markers.
+	CriticalServiceSpotConcentration float64 `json:"critical_service_spot_concentration"`
+
+	// MinPDBSlackIfOneNodeLost is the minimum remaining PDB slack after the
+	// worst single-node loss in the pool. Negative means a one-node loss would
+	// violate at least one matching PDB.
+	// Phase 1 status: live.
+	MinPDBSlackIfOneNodeLost float64 `json:"min_pdb_slack_if_one_node_lost"`
+
+	// MinPDBSlackIfTwoNodesLost is the minimum remaining PDB slack after the
+	// worst two-node loss in the pool. Negative means a two-node loss would
+	// violate at least one matching PDB.
+	// Phase 1 status: live approximation from the two densest node placements.
+	MinPDBSlackIfTwoNodesLost float64 `json:"min_pdb_slack_if_two_nodes_lost"`
+
+	// StatefulPodFraction is the fraction (0..1) of workload pods in the pool
+	// owned by StatefulSets.
+	// Phase 1 status: live.
+	StatefulPodFraction float64 `json:"stateful_pod_fraction"`
+
+	// RestartP95Seconds is the pool-level P95 restart or recovery proxy in
+	// seconds. Phase 1 uses startup-to-ready latency as the best live proxy.
+	// Phase 1 status: live approximation.
+	RestartP95Seconds float64 `json:"restart_p95_seconds"`
+
+	// RecoveryBudgetViolationRisk estimates (0..1) how likely a spot loss is to
+	// violate recovery or availability budgets for the pool.
+	// Phase 1 status: derived_live heuristic.
+	// TODO: replace with direct service-budget telemetry when the runtime has it.
+	RecoveryBudgetViolationRisk float64 `json:"recovery_budget_violation_risk"`
+
+	// SpareODHeadroomNodes estimates how many on-demand-equivalent nodes of
+	// immediate headroom the pool currently has.
+	// Phase 1 status: live approximation from current OD nodes and utilization.
+	// TODO: replace with scheduler or allocatable-aware headroom.
+	SpareODHeadroomNodes float64 `json:"spare_od_headroom_nodes"`
+
+	// ZoneDiversificationScore measures how well the workload is spread across
+	// zones: 0 means single-zone, 0.5 means two zones, 1 means three or more.
+	// Phase 1 status: live.
+	ZoneDiversificationScore float64 `json:"zone_diversification_score"`
+
+	// EvictablePodFraction is the fraction (0..1) of workload pods in the pool
+	// that are presently voluntary-evictable under current PDB state.
+	// Phase 1 status: live approximation.
+	EvictablePodFraction float64 `json:"evictable_pod_fraction"`
+
+	// SafeMaxSpotRatio is the deterministic policy envelope for the maximum spot
+	// ratio considered safe for this pool right now.
+	// Phase 1 status: derived_live heuristic.
+	SafeMaxSpotRatio float64 `json:"safe_max_spot_ratio"`
+}
+
+// DefaultPoolSafetyVector returns the neutral default vector used only when
+// runtime pool telemetry is absent.
+func DefaultPoolSafetyVector() PoolSafetyVector {
+	return PoolSafetyVector{
+		CriticalServiceSpotConcentration: 0.0,
+		MinPDBSlackIfOneNodeLost:         0.0,
+		MinPDBSlackIfTwoNodesLost:        0.0,
+		StatefulPodFraction:              0.0,
+		RestartP95Seconds:                300.0,
+		RecoveryBudgetViolationRisk:      0.0,
+		SpareODHeadroomNodes:             0.0,
+		ZoneDiversificationScore:         1.0,
+		EvictablePodFraction:             1.0,
+		SafeMaxSpotRatio:                 1.0,
+	}
+}
+
+// NormalizePoolSafetyVector clamps pool-safety ratios to sane ranges while
+// preserving signed PDB slack values.
+func NormalizePoolSafetyVector(v PoolSafetyVector) PoolSafetyVector {
+	v.CriticalServiceSpotConcentration = clampFloat(v.CriticalServiceSpotConcentration, 0, 1)
+	v.StatefulPodFraction = clampFloat(v.StatefulPodFraction, 0, 1)
+	if v.RestartP95Seconds < 0 {
+		v.RestartP95Seconds = 0
+	}
+	v.RecoveryBudgetViolationRisk = clampFloat(v.RecoveryBudgetViolationRisk, 0, 1)
+	if v.SpareODHeadroomNodes < 0 {
+		v.SpareODHeadroomNodes = 0
+	}
+	v.ZoneDiversificationScore = clampFloat(v.ZoneDiversificationScore, 0, 1)
+	v.EvictablePodFraction = clampFloat(v.EvictablePodFraction, 0, 1)
+	v.SafeMaxSpotRatio = clampFloat(v.SafeMaxSpotRatio, 0, 1)
+	return v
+}
+
+// IsZero reports whether no pool-safety vector has been populated yet.
+func (v PoolSafetyVector) IsZero() bool {
+	return v == (PoolSafetyVector{})
+}
 
 // RuntimeConfig holds dynamic configuration that can be changed without restarting the agent.
 // These values are reloaded on every reconcile loop to allow runtime tuning.
@@ -49,6 +155,9 @@ type RuntimeConfig struct {
 	RLShadowEnabled *bool `json:"rl_shadow_enabled,omitempty"`
 
 	// DeterministicPolicy configures the TFT-risk + workload rule engine.
+	// The runtime-side pool safety vector contract consumed by this policy is
+	// documented by PoolSafetyVector above. Phase 1 does not add extra JSON
+	// knobs for those live fields; the vector is populated from cluster state.
 	DeterministicPolicy DeterministicPolicyConfig `json:"deterministic_policy"`
 }
 
@@ -95,7 +204,7 @@ func applyRuntimeDefaults(cfg *RuntimeConfig) {
 
 	mode := strings.TrimSpace(strings.ToLower(cfg.PolicyMode))
 	if mode == "" {
-		mode = PolicyModeRL
+		mode = PolicyModeDeterministic
 	}
 	cfg.PolicyMode = mode
 
@@ -130,6 +239,24 @@ func applyRuntimeDefaults(cfg *RuntimeConfig) {
 	}
 	if dp.OODMaxPaybackHoursForIncrease == 0 {
 		dp.OODMaxPaybackHoursForIncrease = 3.0
+	}
+	if dp.TargetSpotRatioDriftAlpha == nil {
+		dp.TargetSpotRatioDriftAlpha = float64Ptr(defaultTargetSpotRatioDriftAlpha)
+	}
+	if len(dp.PriorityCapRules) == 0 {
+		dp.PriorityCapRules = defaultPriorityCapRules()
+	}
+	if len(dp.OutagePenaltyCapRules) == 0 {
+		dp.OutagePenaltyCapRules = defaultOutagePenaltyCapRules()
+	}
+	if len(dp.StartupTimeCapRules) == 0 {
+		dp.StartupTimeCapRules = defaultStartupTimeCapRules()
+	}
+	if len(dp.MigrationCostCapRules) == 0 {
+		dp.MigrationCostCapRules = defaultMigrationCostCapRules()
+	}
+	if len(dp.UtilizationCapRules) == 0 {
+		dp.UtilizationCapRules = defaultUtilizationCapRules()
 	}
 
 	// Buckets from workload distributions (preferred) when not explicitly set.
@@ -191,8 +318,10 @@ func applyRuntimeClamps(cfg *RuntimeConfig) {
 	switch strings.ToLower(strings.TrimSpace(cfg.PolicyMode)) {
 	case PolicyModeDeterministic:
 		cfg.PolicyMode = PolicyModeDeterministic
-	default:
+	case PolicyModeRL:
 		cfg.PolicyMode = PolicyModeRL
+	default:
+		cfg.PolicyMode = PolicyModeDeterministic
 	}
 
 	// Clamp deterministic thresholds.
@@ -220,6 +349,12 @@ func applyRuntimeClamps(cfg *RuntimeConfig) {
 	dp.OODMaxRiskForIncrease = clampFloat(dp.OODMaxRiskForIncrease, 0, 1)
 	dp.OODMinSavingsRatioForIncrease = clampFloat(dp.OODMinSavingsRatioForIncrease, 0, 1)
 	dp.OODMaxPaybackHoursForIncrease = clampFloat(dp.OODMaxPaybackHoursForIncrease, 0.1, 168)
+	dp.TargetSpotRatioDriftAlpha = float64Ptr(dp.ResolvedTargetSpotRatioDriftAlpha())
+	dp.PriorityCapRules = dp.ResolvedPriorityCapRules()
+	dp.OutagePenaltyCapRules = dp.ResolvedOutagePenaltyCapRules()
+	dp.StartupTimeCapRules = dp.ResolvedStartupTimeCapRules()
+	dp.MigrationCostCapRules = dp.ResolvedMigrationCostCapRules()
+	dp.UtilizationCapRules = dp.ResolvedUtilizationCapRules()
 
 	dp.FeatureBuckets.PodStartupTimeSeconds = normalizeBoundaries(dp.FeatureBuckets.PodStartupTimeSeconds)
 	dp.FeatureBuckets.OutagePenaltyHours = normalizeBoundaries(dp.FeatureBuckets.OutagePenaltyHours)
@@ -285,17 +420,64 @@ func validateRuntimeConfig(cfg *RuntimeConfig) error {
 
 // DeterministicPolicyConfig controls deterministic action selection.
 type DeterministicPolicyConfig struct {
-	EmergencyRiskThreshold        float64        `json:"emergency_risk_threshold"`
-	RuntimeEmergencyThreshold     float64        `json:"runtime_emergency_threshold"`
-	HighRiskThreshold             float64        `json:"high_risk_threshold"`
-	MediumRiskThreshold           float64        `json:"medium_risk_threshold"`
-	MinSavingsRatioForIncrease    float64        `json:"min_savings_ratio_for_increase"`
-	MaxPaybackHoursForIncrease    float64        `json:"max_payback_hours_for_increase"`
-	OODMode                       string         `json:"ood_mode"`
-	OODMaxRiskForIncrease         float64        `json:"ood_max_risk_for_increase"`
-	OODMinSavingsRatioForIncrease float64        `json:"ood_min_savings_ratio_for_increase"`
-	OODMaxPaybackHoursForIncrease float64        `json:"ood_max_payback_hours_for_increase"`
-	FeatureBuckets                FeatureBuckets `json:"feature_buckets"`
+	EmergencyRiskThreshold        float64            `json:"emergency_risk_threshold"`
+	RuntimeEmergencyThreshold     float64            `json:"runtime_emergency_threshold"`
+	HighRiskThreshold             float64            `json:"high_risk_threshold"`
+	MediumRiskThreshold           float64            `json:"medium_risk_threshold"`
+	MinSavingsRatioForIncrease    float64            `json:"min_savings_ratio_for_increase"`
+	MaxPaybackHoursForIncrease    float64            `json:"max_payback_hours_for_increase"`
+	OODMode                       string             `json:"ood_mode"`
+	OODMaxRiskForIncrease         float64            `json:"ood_max_risk_for_increase"`
+	OODMinSavingsRatioForIncrease float64            `json:"ood_min_savings_ratio_for_increase"`
+	OODMaxPaybackHoursForIncrease float64            `json:"ood_max_payback_hours_for_increase"`
+	TargetSpotRatioDriftAlpha     *float64           `json:"target_spot_ratio_drift_alpha,omitempty"`
+	PriorityCapRules              []SpotRatioCapRule `json:"priority_cap_rules"`
+	OutagePenaltyCapRules         []SpotRatioCapRule `json:"outage_penalty_cap_rules"`
+	StartupTimeCapRules           []SpotRatioCapRule `json:"startup_time_cap_rules"`
+	MigrationCostCapRules         []SpotRatioCapRule `json:"migration_cost_cap_rules"`
+	UtilizationCapRules           []SpotRatioCapRule `json:"utilization_cap_rules"`
+	FeatureBuckets                FeatureBuckets     `json:"feature_buckets"`
+}
+
+// SpotRatioCapRule maps a feature threshold to a maximum allowed spot ratio.
+// Rules are evaluated in descending threshold order; first match wins.
+type SpotRatioCapRule struct {
+	Threshold    float64 `json:"threshold"`
+	MaxSpotRatio float64 `json:"max_spot_ratio"`
+}
+
+// ResolvedTargetSpotRatioDriftAlpha returns the configured drift alpha or the
+// runtime default when the field is omitted.
+func (p DeterministicPolicyConfig) ResolvedTargetSpotRatioDriftAlpha() float64 {
+	if p.TargetSpotRatioDriftAlpha == nil {
+		return defaultTargetSpotRatioDriftAlpha
+	}
+	return clampFloat(*p.TargetSpotRatioDriftAlpha, 0, 1)
+}
+
+// ResolvedPriorityCapRules returns normalized priority cap rules or defaults.
+func (p DeterministicPolicyConfig) ResolvedPriorityCapRules() []SpotRatioCapRule {
+	return resolvedCapRules(p.PriorityCapRules, defaultPriorityCapRules(), true)
+}
+
+// ResolvedOutagePenaltyCapRules returns normalized outage penalty cap rules or defaults.
+func (p DeterministicPolicyConfig) ResolvedOutagePenaltyCapRules() []SpotRatioCapRule {
+	return resolvedCapRules(p.OutagePenaltyCapRules, defaultOutagePenaltyCapRules(), false)
+}
+
+// ResolvedStartupTimeCapRules returns normalized startup time cap rules or defaults.
+func (p DeterministicPolicyConfig) ResolvedStartupTimeCapRules() []SpotRatioCapRule {
+	return resolvedCapRules(p.StartupTimeCapRules, defaultStartupTimeCapRules(), false)
+}
+
+// ResolvedMigrationCostCapRules returns normalized migration cost cap rules or defaults.
+func (p DeterministicPolicyConfig) ResolvedMigrationCostCapRules() []SpotRatioCapRule {
+	return resolvedCapRules(p.MigrationCostCapRules, defaultMigrationCostCapRules(), false)
+}
+
+// ResolvedUtilizationCapRules returns normalized utilization cap rules or defaults.
+func (p DeterministicPolicyConfig) ResolvedUtilizationCapRules() []SpotRatioCapRule {
+	return resolvedCapRules(p.UtilizationCapRules, defaultUtilizationCapRules(), true)
 }
 
 // FeatureBuckets defines known value ranges for OOD detection.
@@ -322,6 +504,92 @@ func defaultFeatureBuckets() FeatureBuckets {
 		PriorityScore:         []float64{0.0, 0.25, 0.5, 0.75, 1.0},
 		ClusterUtilization:    []float64{0.0, 0.5, 0.7, 0.85, 0.95, 1.0},
 	}
+}
+
+func defaultPriorityCapRules() []SpotRatioCapRule {
+	return []SpotRatioCapRule{
+		{Threshold: 0.90, MaxSpotRatio: 0.20},
+		{Threshold: 0.70, MaxSpotRatio: 0.50},
+		{Threshold: 0.45, MaxSpotRatio: 0.80},
+	}
+}
+
+func defaultOutagePenaltyCapRules() []SpotRatioCapRule {
+	return []SpotRatioCapRule{
+		{Threshold: 96.0, MaxSpotRatio: 0.10},
+		{Threshold: 48.0, MaxSpotRatio: 0.20},
+		{Threshold: 24.0, MaxSpotRatio: 0.30},
+		{Threshold: 10.0, MaxSpotRatio: 0.50},
+	}
+}
+
+func defaultStartupTimeCapRules() []SpotRatioCapRule {
+	return []SpotRatioCapRule{
+		{Threshold: 600.0, MaxSpotRatio: 0.20},
+		{Threshold: 300.0, MaxSpotRatio: 0.30},
+		{Threshold: 120.0, MaxSpotRatio: 0.50},
+	}
+}
+
+func defaultMigrationCostCapRules() []SpotRatioCapRule {
+	return []SpotRatioCapRule{
+		{Threshold: 8.0, MaxSpotRatio: 0.20},
+		{Threshold: 5.0, MaxSpotRatio: 0.30},
+		{Threshold: 2.0, MaxSpotRatio: 0.60},
+	}
+}
+
+func defaultUtilizationCapRules() []SpotRatioCapRule {
+	return []SpotRatioCapRule{
+		{Threshold: 0.95, MaxSpotRatio: 0.70},
+	}
+}
+
+func resolvedCapRules(configured, fallback []SpotRatioCapRule, clampThresholdToUnit bool) []SpotRatioCapRule {
+	if len(configured) == 0 {
+		return cloneCapRules(fallback)
+	}
+	return normalizeCapRules(configured, clampThresholdToUnit)
+}
+
+func normalizeCapRules(rules []SpotRatioCapRule, clampThresholdToUnit bool) []SpotRatioCapRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]SpotRatioCapRule, 0, len(rules))
+	for _, rule := range rules {
+		threshold := rule.Threshold
+		if threshold < 0 {
+			threshold = 0
+		}
+		if clampThresholdToUnit {
+			threshold = clampFloat(threshold, 0, 1)
+		}
+		out = append(out, SpotRatioCapRule{
+			Threshold:    threshold,
+			MaxSpotRatio: clampFloat(rule.MaxSpotRatio, 0, 1),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Threshold == out[j].Threshold {
+			return out[i].MaxSpotRatio < out[j].MaxSpotRatio
+		}
+		return out[i].Threshold > out[j].Threshold
+	})
+	return out
+}
+
+func cloneCapRules(rules []SpotRatioCapRule) []SpotRatioCapRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]SpotRatioCapRule, len(rules))
+	copy(out, rules)
+	return out
+}
+
+func float64Ptr(v float64) *float64 {
+	return &v
 }
 
 func normalizeBoundaries(values []float64) []float64 {

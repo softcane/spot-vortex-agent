@@ -121,7 +121,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		ModelManifestPath:    cfg.Inference.ModelManifestPath,
 		ExpectedCloud:        cfg.Inference.ExpectedCloud,
 		RequireModelContract: true,
-		RequireRuntimeHead:   !IsDryRun(),
 		Logger:               slog.Default(),
 	})
 	if err != nil {

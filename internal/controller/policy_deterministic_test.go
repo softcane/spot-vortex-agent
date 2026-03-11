@@ -79,17 +79,20 @@ func TestEvaluateDeterministicPolicy_HighAndMediumBands(t *testing.T) {
 	}
 }
 
-func TestEvaluateDeterministicPolicy_HoldWhenCapReached(t *testing.T) {
+func TestEvaluateDeterministicPolicy_ReducesWhenCapExceeded(t *testing.T) {
 	state := baseDeterministicState()
 	state.PriorityScore = 0.80 // workload cap should be <= 0.50
 	state.CurrentSpotRatio = 0.60
 
 	action, decision := evaluateDeterministicPolicy(state, 0.10, 0.10, deterministicRuntimeConfig())
-	if action != inference.ActionHold {
-		t.Fatalf("expected HOLD when cap reached, got %s", inference.ActionToString(action))
+	if action != inference.ActionDecrease10 {
+		t.Fatalf("expected DECREASE_10 when safe cap is exceeded, got %s", inference.ActionToString(action))
 	}
-	if decision.Reason != "cap_reached" {
-		t.Fatalf("expected cap_reached reason, got %q", decision.Reason)
+	if decision.Reason != "pool_safety_reduce_gradual" {
+		t.Fatalf("expected pool_safety_reduce_gradual reason, got %q", decision.Reason)
+	}
+	if decision.ResponseMode != ResponseModeReduceSpotGradual {
+		t.Fatalf("expected reduce_spot_gradual response mode, got %q", decision.ResponseMode)
 	}
 	if decision.EffectiveCap > 0.50 {
 		t.Fatalf("expected effective cap <= 0.50, got %.2f", decision.EffectiveCap)
@@ -105,6 +108,9 @@ func TestEvaluateDeterministicPolicy_EconomicIncrease30(t *testing.T) {
 	}
 	if decision.Reason != "economic_increase30" {
 		t.Fatalf("expected economic_increase30 reason, got %q", decision.Reason)
+	}
+	if decision.ResponseMode != ResponseModeAllowGrowth {
+		t.Fatalf("expected allow_growth response mode, got %q", decision.ResponseMode)
 	}
 }
 
@@ -146,5 +152,102 @@ func TestComputeWorkloadSpotCap_CombinesRules(t *testing.T) {
 	cap := evaluator.computeWorkloadSpotCap(state)
 	if cap > 0.10 {
 		t.Fatalf("expected strict cap <= 0.10, got %.2f", cap)
+	}
+}
+
+func TestEvaluateDeterministicPolicy_UsesConfiguredPriorityCapRules(t *testing.T) {
+	state := baseDeterministicState()
+	state.PriorityScore = 0.50
+	state.CurrentSpotRatio = 0.60
+
+	cfg := deterministicRuntimeConfig()
+	cfg.DeterministicPolicy.PriorityCapRules = []config.SpotRatioCapRule{
+		{Threshold: 0.40, MaxSpotRatio: 0.55},
+	}
+
+	action, decision := evaluateDeterministicPolicy(state, 0.10, 0.10, cfg)
+	if action != inference.ActionDecrease10 {
+		t.Fatalf("expected DECREASE_10 from configured priority cap overshoot, got %s", inference.ActionToString(action))
+	}
+	if decision.Reason != "pool_safety_reduce_gradual" {
+		t.Fatalf("expected pool_safety_reduce_gradual reason, got %q", decision.Reason)
+	}
+	if decision.EffectiveCap != 0.55 {
+		t.Fatalf("expected effective cap 0.55 from config rule, got %.2f", decision.EffectiveCap)
+	}
+}
+
+func TestComputeWorkloadSpotCap_UsesConfiguredFeatureRules(t *testing.T) {
+	state := baseDeterministicState()
+
+	cfg := deterministicRuntimeConfig()
+	cfg.DeterministicPolicy.PriorityCapRules = []config.SpotRatioCapRule{
+		{Threshold: 0.90, MaxSpotRatio: 0.95},
+	}
+	cfg.DeterministicPolicy.OutagePenaltyCapRules = []config.SpotRatioCapRule{
+		{Threshold: 0.50, MaxSpotRatio: 0.60},
+	}
+	cfg.DeterministicPolicy.StartupTimeCapRules = []config.SpotRatioCapRule{
+		{Threshold: 20, MaxSpotRatio: 0.45},
+	}
+	cfg.DeterministicPolicy.MigrationCostCapRules = []config.SpotRatioCapRule{
+		{Threshold: 0.10, MaxSpotRatio: 0.35},
+	}
+	cfg.DeterministicPolicy.UtilizationCapRules = []config.SpotRatioCapRule{
+		{Threshold: 0.55, MaxSpotRatio: 0.25},
+	}
+
+	evaluator := NewPolicyEvaluator(cfg)
+	cap := evaluator.computeWorkloadSpotCap(state)
+	if cap != 0.25 {
+		t.Fatalf("expected configured feature caps to resolve to 0.25, got %.2f", cap)
+	}
+}
+
+func TestEvaluateDeterministicPolicy_FreezeSpotAtExactCap(t *testing.T) {
+	state := baseDeterministicState()
+	state.CurrentSpotRatio = 0.50
+	state.PriorityScore = 0.80
+
+	action, decision := evaluateDeterministicPolicy(state, 0.10, 0.10, deterministicRuntimeConfig())
+	if action != inference.ActionHold {
+		t.Fatalf("expected HOLD at exact cap, got %s", inference.ActionToString(action))
+	}
+	if decision.Reason != "cap_reached" {
+		t.Fatalf("expected cap_reached reason, got %q", decision.Reason)
+	}
+	if decision.ResponseMode != ResponseModeFreezeSpot {
+		t.Fatalf("expected freeze_spot response mode, got %q", decision.ResponseMode)
+	}
+}
+
+func TestEvaluateDeterministicPolicy_UsesPoolSafetyVectorSurface(t *testing.T) {
+	state := baseDeterministicState()
+	state.CurrentSpotRatio = 0.55
+	state.PoolSafety = config.NormalizePoolSafetyVector(config.PoolSafetyVector{
+		CriticalServiceSpotConcentration: 1.0,
+		MinPDBSlackIfOneNodeLost:         -1.0,
+		MinPDBSlackIfTwoNodesLost:        -1.0,
+		StatefulPodFraction:              0.6,
+		RestartP95Seconds:                700,
+		RecoveryBudgetViolationRisk:      0.95,
+		SpareODHeadroomNodes:             0.0,
+		ZoneDiversificationScore:         0.0,
+		EvictablePodFraction:             0.2,
+		SafeMaxSpotRatio:                 0.10,
+	})
+
+	action, decision := evaluateDeterministicPolicy(state, 0.10, 0.10, deterministicRuntimeConfig())
+	if action != inference.ActionDecrease30 {
+		t.Fatalf("expected DECREASE_30 from pool safety overshoot, got %s", inference.ActionToString(action))
+	}
+	if decision.Reason != "pool_safety_reduce_fast" {
+		t.Fatalf("expected pool_safety_reduce_fast reason, got %q", decision.Reason)
+	}
+	if decision.ResponseMode != ResponseModeReduceSpotFast {
+		t.Fatalf("expected reduce_spot_fast response mode, got %q", decision.ResponseMode)
+	}
+	if decision.PoolSafety.SafeMaxSpotRatio != 0.10 {
+		t.Fatalf("expected safe max spot ratio 0.10, got %.2f", decision.PoolSafety.SafeMaxSpotRatio)
 	}
 }

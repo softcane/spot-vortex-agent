@@ -404,7 +404,6 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	// Routes to the correct CapacityManager per node:
 	// - Karpenter nodes: batch steer NodePool weights (fast, non-blocking)
 	// - CA/MNG nodes: scale up twin ASG, wait for Ready (blocking)
-	// Legacy path: still calls batchSteerKarpenterWeights for backward compat
 	c.batchSteerKarpenterWeights(ctx, nodesToDrain)
 	c.prepareCapacitySwaps(ctx, nodesToDrain)
 
@@ -445,6 +444,8 @@ type NodeAssessment struct {
 	ClusterUtilization float32
 	ShadowAction       inference.Action
 	HasShadow          bool
+	ResponseMode       PolicyResponseMode
+	Urgency            PolicyUrgency
 }
 
 func (c *Controller) unsupportedFamilyAssessment(nodeID, instanceType, reason string) NodeAssessment {
@@ -474,6 +475,7 @@ func (c *Controller) unsupportedFamilyAssessment(nodeID, instanceType, reason st
 func (c *Controller) loadRuntimeConfig() *config.RuntimeConfig {
 	runtimeCfg, err := config.LoadRuntimeConfig("config/runtime.json")
 	if err != nil {
+		c.logger.Warn("failed to load runtime config; falling back to safe deterministic defaults", "error", err)
 		return config.DefaultRuntimeConfig()
 	}
 	return runtimeCfg
@@ -695,6 +697,7 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 			CurrentSpotRatio:   currentRatio,
 			TargetSpotRatio:    targetRatio,
 			PriorityScore:      poolFeats.PriorityScore,
+			PoolSafety:         poolFeats.PoolSafety,
 		}
 
 		action, capacityScore, runtimeScore, confidence, err := c.predictDetailed(ctx, m.NodeID, state, riskMult)
@@ -726,11 +729,15 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 		decisionSource := "rl"
 		hasShadow := false
 		shadowAction := inference.ActionHold
+		responseMode := PolicyResponseMode("")
+		urgency := PolicyUrgency("")
 		if useDeterministic {
 			deterministicAction, deterministic := evaluateDeterministicPolicy(state, float64(capacityScore), float64(runtimeScore), runtimeCfg)
 			action = deterministicAction
 			confidence = 1.0
 			decisionSource = "deterministic"
+			responseMode = deterministic.ResponseMode
+			urgency = deterministic.Urgency
 			if useRLShadow && rlAvailable {
 				hasShadow = true
 				shadowAction = rlAction
@@ -738,6 +745,15 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 
 			metrics.DeterministicDecisionReason.WithLabelValues(deterministic.Reason).Inc()
 			metrics.WorkloadCap.WithLabelValues(poolID).Set(deterministic.EffectiveCap)
+			c.logger.Debug("deterministic pool decision",
+				"pool", poolID,
+				"node_id", m.NodeID,
+				"response_mode", deterministic.ResponseMode,
+				"urgency", deterministic.Urgency,
+				"reason", deterministic.Reason,
+				"safe_max_spot_ratio", deterministic.PoolSafety.SafeMaxSpotRatio,
+				"recovery_budget_violation_risk", deterministic.PoolSafety.RecoveryBudgetViolationRisk,
+			)
 			if deterministic.IsOOD {
 				metrics.WorkloadOOD.WithLabelValues(poolID).Set(1.0)
 				for _, reason := range deterministic.OODReasons {
@@ -774,6 +790,8 @@ func (c *Controller) runInference(ctx context.Context, nodeMetrics []metrics.Nod
 			ClusterUtilization: float32(clusterUtil),
 			ShadowAction:       shadowAction,
 			HasShadow:          hasShadow,
+			ResponseMode:       responseMode,
+			Urgency:            urgency,
 		})
 
 		metrics.CapacityScore.WithLabelValues(m.NodeID, m.Zone).Set(float64(capacityScore))
@@ -1095,6 +1113,7 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 			CurrentSpotRatio:   currentSpotRatio[poolKey],
 			TargetSpotRatio:    targetSpotRatio[poolKey],
 			PriorityScore:      poolFeats.PriorityScore,
+			PoolSafety:         poolFeats.PoolSafety,
 		}
 
 		// Run inference once for this pool
@@ -1126,11 +1145,15 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 		decisionSource := "rl"
 		hasShadow := false
 		shadowAction := inference.ActionHold
+		responseMode := PolicyResponseMode("")
+		urgency := PolicyUrgency("")
 		if useDeterministic {
 			deterministicAction, deterministic := evaluateDeterministicPolicy(state, float64(capacityScore), float64(runtimeScore), runtimeCfg)
 			action = deterministicAction
 			confidence = 1.0
 			decisionSource = "deterministic"
+			responseMode = deterministic.ResponseMode
+			urgency = deterministic.Urgency
 			if useRLShadow && rlAvailable {
 				hasShadow = true
 				shadowAction = rlAction
@@ -1138,6 +1161,14 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 
 			metrics.DeterministicDecisionReason.WithLabelValues(deterministic.Reason).Inc()
 			metrics.WorkloadCap.WithLabelValues(poolKey).Set(deterministic.EffectiveCap)
+			c.logger.Debug("deterministic pool decision",
+				"pool", poolKey,
+				"response_mode", deterministic.ResponseMode,
+				"urgency", deterministic.Urgency,
+				"reason", deterministic.Reason,
+				"safe_max_spot_ratio", deterministic.PoolSafety.SafeMaxSpotRatio,
+				"recovery_budget_violation_risk", deterministic.PoolSafety.RecoveryBudgetViolationRisk,
+			)
 			if deterministic.IsOOD {
 				metrics.WorkloadOOD.WithLabelValues(poolKey).Set(1.0)
 				for _, reason := range deterministic.OODReasons {
@@ -1188,6 +1219,8 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 			ClusterUtilization: float32(clusterUtil),
 			ShadowAction:       shadowAction,
 			HasShadow:          hasShadow,
+			ResponseMode:       responseMode,
+			Urgency:            urgency,
 		}
 
 		// Emit metrics for the pool
@@ -1243,6 +1276,8 @@ func (c *Controller) runPoolLevelInference(ctx context.Context, nodeMetrics []me
 			ClusterUtilization: poolAction.ClusterUtilization,
 			ShadowAction:       poolAction.ShadowAction,
 			HasShadow:          poolAction.HasShadow,
+			ResponseMode:       poolAction.ResponseMode,
+			Urgency:            poolAction.Urgency,
 		})
 	}
 
@@ -1410,22 +1445,16 @@ func (c *Controller) applyTargetSpotRatioWithConfig(poolID string, action infere
 	if runtimeCfg != nil {
 		updated = runtimeCfg.ClampSpotRatio(updated)
 
-		// Optional: lerp toward target_spot_ratio when market is safe (low risk)
-		// Alpha = 0.1 for gradual drift (per Section 5.1.1 of production doc)
+		// Optional: lerp toward target_spot_ratio when market is safe (low risk).
+		// Alpha is config-driven to keep runtime and offline policy evaluation aligned.
 		if riskLow && action == inference.ActionHold {
-			// Only lerp on HOLD actions when market is calm
-			updated = lerp(updated, runtimeCfg.TargetSpotRatio, 0.1)
+			alpha := runtimeCfg.DeterministicPolicy.ResolvedTargetSpotRatioDriftAlpha()
+			updated = lerp(updated, runtimeCfg.TargetSpotRatio, alpha)
 			updated = runtimeCfg.ClampSpotRatio(updated) // re-clamp after lerp
 		}
 	}
 
 	c.targetSpotRatio[poolID] = updated
-}
-
-// applyTargetSpotRatio is the backward-compatible version without runtime config.
-// Deprecated: Use applyTargetSpotRatioWithConfig for production.
-func (c *Controller) applyTargetSpotRatio(poolID string, action inference.Action) {
-	c.applyTargetSpotRatioWithConfig(poolID, action, nil, false)
 }
 
 // lerp performs linear interpolation between a and b.
@@ -1625,11 +1654,14 @@ func (c *Controller) batchSteerKarpenterWeights(ctx context.Context, nodes []Nod
 			poolDecisions[workloadPool] = decision
 		}
 
-		// Count decisions per pool
-		switch node.Action {
-		case inference.ActionIncrease10, inference.ActionIncrease30:
+		// Count decisions per pool. freeze_spot is a weight-steering-only intent:
+		// favor on-demand for new capacity, but do not force immediate drains.
+		switch {
+		case node.ResponseMode == ResponseModeFreezeSpot:
+			decision.favorOD++
+		case node.Action == inference.ActionIncrease10 || node.Action == inference.ActionIncrease30:
 			decision.favorSpot++
-		case inference.ActionDecrease10, inference.ActionDecrease30, inference.ActionEmergencyExit:
+		case node.Action == inference.ActionDecrease10 || node.Action == inference.ActionDecrease30 || node.Action == inference.ActionEmergencyExit:
 			decision.favorOD++
 		}
 	}
@@ -1811,6 +1843,15 @@ func (c *Controller) filterActionableNodes(assessments []NodeAssessment) []NodeA
 			actionable = append(actionable, a)
 			continue
 		}
+
+		if a.ResponseMode == ResponseModeFreezeSpot {
+			c.logger.Info("deterministic policy requests freeze_spot",
+				"node_id", a.NodeID,
+				"urgency", a.Urgency,
+			)
+			actionable = append(actionable, a)
+			continue
+		}
 	}
 
 	return actionable
@@ -1863,19 +1904,29 @@ func (c *Controller) filterExecutableNodes(ctx context.Context, assessments []No
 // Per PRODUCTION_FLOW_EKS_KARPENTER.md Section 5.4: limit drains per pool based on target ratio delta.
 // Per Section 2.4: "keep drain concurrency below budgets" - respects Karpenter disruption budgets.
 func (c *Controller) applyDrainLimit(ctx context.Context, nodes []NodeAssessment, totalNodes int) []NodeAssessment {
+	capacityOnly := make([]NodeAssessment, 0, len(nodes))
+	drainNodes := make([]NodeAssessment, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Action == inference.ActionHold {
+			capacityOnly = append(capacityOnly, node)
+			continue
+		}
+		drainNodes = append(drainNodes, node)
+	}
+
 	// Global max drain limit from config
 	maxDrain := int(float64(totalNodes) * c.maxDrainRatio)
 	if maxDrain < 1 {
 		maxDrain = 1
 	}
 
-	if len(nodes) == 0 {
-		return nodes
+	if len(drainNodes) == 0 {
+		return capacityOnly
 	}
 
 	// Sort nodes by priority: EMERGENCY_EXIT first, then by CapacityScore (descending)
-	sortedNodes := make([]NodeAssessment, len(nodes))
-	copy(sortedNodes, nodes)
+	sortedNodes := make([]NodeAssessment, len(drainNodes))
+	copy(sortedNodes, drainNodes)
 	for i := 0; i < len(sortedNodes)-1; i++ {
 		for j := i + 1; j < len(sortedNodes); j++ {
 			// EMERGENCY_EXIT actions take priority
@@ -1913,7 +1964,7 @@ func (c *Controller) applyDrainLimit(ctx context.Context, nodes []NodeAssessment
 		sortedNodes = sortedNodes[:maxDrain]
 	}
 
-	return sortedNodes
+	return append(capacityOnly, sortedNodes...)
 }
 
 // getKarpenterDisruptionLimit calculates the effective drain limit based on
@@ -2137,6 +2188,8 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 	c.logger.Info("executing node action",
 		"node_id", node.NodeID,
 		"action", inference.ActionToString(node.Action),
+		"response_mode", node.ResponseMode,
+		"urgency", node.Urgency,
 		"capacity_score", node.CapacityScore,
 	)
 

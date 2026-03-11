@@ -5,6 +5,8 @@ package inference
 import (
 	"math"
 	"time"
+
+	"github.com/softcane/spot-vortex-agent/internal/config"
 )
 
 const (
@@ -95,6 +97,9 @@ type NodeState struct {
 	IsSpot             bool    // Current mode (The Missing Link)
 	CurrentSpotRatio   float64 // V2: Fraction of node group on spot
 	TargetSpotRatio    float64 // V2: Action-driven target
+	// PoolSafety carries the topology-aware pool blast-radius contract.
+	// RL inputs remain unchanged in Phase 1; deterministic policy consumes this.
+	PoolSafety config.PoolSafetyVector
 
 	// Timing
 	Timestamp time.Time

@@ -85,10 +85,9 @@ func TestController_Reconcile_DryRun(t *testing.T) {
 	// which corresponds to internal/controller/models/pysr/... in this test context.
 	// We created those dummy files.
 	inf, err := inference.NewInferenceEngine(inference.EngineConfig{
-		TFTModelPath:       "../../models/tft.onnx",
-		RLModelPath:        "../../models/rl_policy.onnx",
-		Logger:             logger,
-		RequireRuntimeHead: false, // Don't enforce runtime head for older models
+		TFTModelPath: "../../models/tft.onnx",
+		RLModelPath:  "../../models/rl_policy.onnx",
+		Logger:       logger,
 	})
 	if err != nil {
 		t.Logf("Failed to load inference engine (skipping Reconcile test): %v", err)
@@ -183,6 +182,40 @@ func TestController_ApplyDrainLimit(t *testing.T) {
 	}
 }
 
+func TestController_ApplyDrainLimit_PreservesCapacityOnlyFreezeSpot(t *testing.T) {
+	ctrl := &Controller{
+		maxDrainRatio: 0.1,
+		logger:        slog.Default(),
+	}
+
+	nodes := []NodeAssessment{
+		{NodeID: "freeze-1", Action: inference.ActionHold, ResponseMode: ResponseModeFreezeSpot},
+		{NodeID: "freeze-2", Action: inference.ActionHold, ResponseMode: ResponseModeFreezeSpot},
+	}
+	for i := 0; i < 20; i++ {
+		nodes = append(nodes, NodeAssessment{
+			NodeID:        fmt.Sprintf("drain-%d", i),
+			Action:        inference.ActionDecrease30,
+			CapacityScore: 0.5,
+		})
+	}
+
+	limited := ctrl.applyDrainLimit(context.Background(), nodes, 100)
+	if len(limited) != 12 {
+		t.Fatalf("expected 2 freeze_spot capacity-only intents plus 10 drain actions, got %d", len(limited))
+	}
+
+	freezeCount := 0
+	for _, a := range limited {
+		if a.ResponseMode == ResponseModeFreezeSpot && a.Action == inference.ActionHold {
+			freezeCount++
+		}
+	}
+	if freezeCount != 2 {
+		t.Fatalf("expected both freeze_spot intents to bypass drain limiting, got %d", freezeCount)
+	}
+}
+
 func TestController_FilterActionableNodes(t *testing.T) {
 	ctrl := &Controller{
 		confidenceThreshold: 0.5,
@@ -230,6 +263,17 @@ func TestController_FilterActionableNodes(t *testing.T) {
 			},
 			wantKeep:   true,
 			wantAction: inference.ActionEmergencyExit,
+		},
+		{
+			name: "freeze spot hold remains actionable",
+			assessment: NodeAssessment{
+				Action:       inference.ActionHold,
+				Confidence:   0.9,
+				ResponseMode: ResponseModeFreezeSpot,
+				Urgency:      PolicyUrgencyMedium,
+			},
+			wantKeep:   true,
+			wantAction: inference.ActionHold,
 		},
 	}
 
@@ -645,6 +689,14 @@ func TestBatchSteerKarpenterWeights(t *testing.T) {
 			name: "emergency action favors on-demand",
 			assessments: []NodeAssessment{
 				{NodeID: "n1", Action: inference.ActionEmergencyExit},
+			},
+			wantSpot: 20,
+			wantOD:   80,
+		},
+		{
+			name: "freeze spot favors on-demand without drain action",
+			assessments: []NodeAssessment{
+				{NodeID: "n1", Action: inference.ActionHold, ResponseMode: ResponseModeFreezeSpot},
 			},
 			wantSpot: 20,
 			wantOD:   80,

@@ -26,7 +26,6 @@ func TestV2MigrationScenarios(t *testing.T) {
 		RLModelPath:         "../../models/rl_policy.onnx",
 		PySRCalibrationPath: "../../models/pysr/calibration_equation.txt",
 		PySRFusionPath:      "../../models/pysr/context_equation.txt",
-		RequireRuntimeHead:  true,
 		Logger:              logger,
 	})
 	if err != nil {

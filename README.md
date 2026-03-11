@@ -3,85 +3,161 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/softcane/spot-vortex-agent)](https://goreportcard.com/report/github.com/softcane/spot-vortex-agent)
 
-SpotVortex is an open-source Kubernetes operator that helps teams use Spot capacity with safety controls.
+SpotVortex Agent is the in-cluster controller for safe Spot adoption.
 
-It runs in-cluster, makes local decisions, and aims for one outcome:
+It helps SRE and FinOps teams increase Spot usage at the node-pool level without handing workload data to an external service. The agent uses the shipped TFT risk model, live pool safety signals, and a deterministic control policy to decide when to grow, hold, freeze, or reduce Spot exposure.
 
-- lower compute cost
-- bounded risk
-- auditable behavior
+![Example simulated monthly deterministic uplift](docs/assets/deterministic_monthly_uplift_example.svg)
 
-## Value At A Glance (Example)
+The chart above is a simulated example, not a production guarantee. It shows the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
 
-These numbers are **incremental net uplift vs a baseline policy** in our current simulation setup.
+## What You Deploy Today
 
-- **Deterministic controller (active path today)**: safer default, production-first
-- **RL policy**: higher upside in some runs, but **shadow mode first** until your cluster telemetry confirms reliability
+- Active policy mode: `deterministic`
+- Control cadence: `10` minutes
+- Spot bounds: `min_spot_ratio=0.167`, `max_spot_ratio=1.0`
+- Preferred operating point: `target_spot_ratio=0.5`
+- Market hazard model: transition-aware TFT from `models/tft.onnx`
+- RL: shadow-only; it records comparison telemetry and does not actuate production changes
+- Bundle contract: `models/MODEL_MANIFEST.json`
+- Cloud scope: AWS, `60` supported instance families
 
-### Example monthly uplift (illustrative)
+The shipped runtime config lives in [config/runtime.json](config/runtime.json).
 
-| Cluster size | Baseline policy uplift | Deterministic (active) | RL shadow upside (simulated) |
-|---|---:|---:|---:|
-| 100 nodes | $0 | ~$293/mo | ~$1,758/mo |
-| 300 nodes | $0 | ~$878/mo | ~$5,274/mo |
-| 1000 nodes | $0 | ~$2,928/mo | ~$17,581/mo |
+## How It Works
 
-![Example monthly uplift vs baseline policy (service-impact proxy)](docs/assets/value_uplift_example_service_impact.png)
+1. Loads the local ONNX bundle from `models/`.
+2. Uses TFT as the market risk signal.
+3. Builds a pool-safety view from live cluster state.
+4. Chooses a deterministic response for each node pool.
+5. Applies that response with steering, tainting, draining, and replacement controls.
+6. Keeps RL in shadow for comparison only.
 
-### What this RL shadow example means (simple)
+The control unit is the node pool, not the individual pod.
 
-- The RL shadow upside example above uses the **service-impact proxy** (`Service Impact Events (simulated)`).
-- In that reference run (`RL seed42`), the projected upside came with **0 simulated service-impact events**.
-- The same policy also showed about **40 Exposure Events** under the stricter legacy proxy (`any_spot_eviction`) in the evaluation sample.
-- `730 hours/month` is only used to scale **money** into a monthly projection. It is **not** a claim of “40 events per month.”
+## How To Read The Savings Chart
 
-### Example assumptions (important)
+- It is a simulated monthly net uplift example.
+- It is scaled from the latest offline deterministic scorecard.
+- It assumes a `730` hour month.
+- It assumes AWS pools similar to `c6i.large`, `m6i.large`, and `r6i.large`.
+- It compares the current deterministic runtime to the older deterministic runtime.
+- It is not a promise for your production cluster.
 
-These example numbers are not universal. They depend on workload mix and market conditions.
+If you are a FinOps or SRE reader, the right takeaway is:
 
-- **Cloud**: AWS
-- **Fleet node family mix (illustrative weighted average)**:
-  - compute-optimized (`c5/c6/c7*`): ~35%
-  - general-purpose (`m5/m6/m7*`): ~35%
-  - memory-optimized (`r5/r6/r7*`): ~15%
-  - burstable (`t3/t4g`): ~15%
-- **Workload mix used in simulation priors**:
-  - P0 critical: 6%
-  - P1 sensitive: 12%
-  - P2 standard: 47%
-  - P3 elastic/batch: 35%
-- **Metric used for value example**: `Service Impact Events (simulated)` (customer-impact proxy)
-- **Cadence**: 30-minute decision steps
-- **Period projection**: 730 hours/month
+- this is the direction and size of the value we are targeting
+- real results depend on your workload mix, pool safety, and interruption conditions
+- production rollout quality must be judged from live telemetry, not from this chart alone
 
-Best fit (highest value):
-- clusters with high node-hours
-- meaningful spot/on-demand price spread
-- workloads with some elastic capacity (not all P0/P1)
+## How The Runtime Thinks About Risk
 
-## How SpotVortex Reduces Risk (Simple)
+The runtime does not only use average workload severity. It also carries a pool-safety vector that approximates blast radius for each node pool, including:
 
-SpotVortex does not just “push more Spot.”
+- `critical_service_spot_concentration`
+- `min_pdb_slack_if_one_node_lost`
+- `min_pdb_slack_if_two_nodes_lost`
+- `stateful_pod_fraction`
+- `restart_p95_seconds`
+- `recovery_budget_violation_risk`
+- `spare_od_headroom_nodes`
+- `zone_diversification_score`
+- `evictable_pod_fraction`
+- `safe_max_spot_ratio`
 
-It adds safety controls around every decision:
+This keeps the decision node-level while making the policy more sensitive to real service impact.
 
-- confidence/risk gating
-- guarded draining and migration limits
-- safe fallback behavior for unsupported conditions
-- deterministic mode for production-safe rollout
-- shadow mode for comparing RL recommendations before enabling them
+If some pool-safety signals are unavailable, the runtime falls back to safe deterministic defaults instead of silently promoting RL behavior.
 
-## What “Risk” Means in Our Examples
+## How To Roll It Out
 
-We use clear labels so operators do not confuse proxy metrics with customer impact:
+Treat SpotVortex as an operational control system, not just a model bundle.
 
-- **Exposure Events** = strict proxy (we were on Spot during a risky event label)
-- **Service Impact Events (simulated)** = closer proxy for customer impact
-- **Real interruption/recovery telemetry** = what matters most in production rollout
+Recommended rollout path:
 
-During rollout, you should judge success using **live telemetry**, not simulator metrics alone.
+1. Install the agent in dry-run or shadow mode first.
+2. Confirm the bundle loads and the controller runs cleanly.
+3. Check the agent’s recommendations against your current pool behavior.
+4. Start with a limited set of node pools.
+5. Watch live interruption, drain, restart, and recovery telemetry.
+6. Expand only after the cluster behavior is stable.
 
-## Current Recommended Rollout Mode
+The runtime facts that matter for rollout are:
 
-- **Active controller**: deterministic
-- **RL**: shadow mode (compare only, no actuation) until your telemetry confirms it is safe in your environment
+- the shipped controller is deterministic
+- TFT is the live market risk input
+- RL is shadow telemetry only
+- bundle checksums are enforced through `models/MODEL_MANIFEST.json`
+- production value has to be confirmed with live telemetry
+
+## What To Validate In Your Cluster
+
+Before calling a rollout successful, verify:
+
+- the agent starts and loads the bundle cleanly
+- the deterministic controller is making pool-level decisions
+- no unexpected drain or restart behavior appears
+- interruption and recovery behavior stays acceptable
+- savings improve without creating service impact
+
+The savings chart is useful for planning. Live telemetry is what decides production success.
+
+## Quick Validation
+
+Focused runtime validation:
+
+```bash
+go test ./internal/config/...
+go test ./internal/inference/...
+go test ./internal/controller/...
+```
+
+Deterministic Kind end-to-end path:
+
+```bash
+go test -v ./internal/controller -run TestDeterministicModeKindInferencePath -count=1
+```
+
+Release/install proof on Kind:
+
+```bash
+bash hack/verify-release-kind-install.sh
+```
+
+## Running Locally
+
+The agent expects:
+
+- Kubernetes access
+- ONNX runtime library available to the process
+- model bundle in `models/`
+- runtime config in `config/runtime.json`
+
+Local run path:
+
+```bash
+go run ./cmd/agent run
+```
+
+For shadow-style local testing, use dry-run deployment settings rather than editing the shipped runtime policy contract.
+
+
+## Repository Layout
+
+- [cmd/](cmd/): CLI entrypoints
+- [config/](config/): shipped runtime config and install defaults
+- [internal/config/](internal/config/): runtime config schema and normalization
+- [internal/controller/](internal/controller/): deterministic controller and execution logic
+- [internal/inference/](internal/inference/): ONNX bundle loading and inference contract
+- [models/](models/): shipped model bundle and manifest
+- [tests/e2e/](tests/e2e/): Kind and install-path helpers
+- [hack/](hack/): release and install verification scripts
+
+## Current Runtime Facts
+
+- deterministic is the active runtime path
+- TFT is the shipped market model
+- RL is shadow-only
+- `10` minutes is the active cadence
+- manifest-verified bundle loading is required
+- simulated value claims must be labeled as simulated

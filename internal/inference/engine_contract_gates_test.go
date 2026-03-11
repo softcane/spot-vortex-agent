@@ -66,7 +66,6 @@ func TestNewInferenceEngine_FailsOnManifestChecksumMismatch(t *testing.T) {
 		RLModelPath:          rl,
 		ModelManifestPath:    manifestPath,
 		RequireModelContract: true,
-		RequireRuntimeHead:   false,
 		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err == nil {
@@ -80,7 +79,7 @@ func TestNewInferenceEngine_FailsOnManifestChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestValidateTFTOutputContract_FailsWhenRuntimeHeadRequiredMissing(t *testing.T) {
+func TestValidateTFTOutputContract_FailsWhenRuntimeHeadMissing(t *testing.T) {
 	ensureORTTensorsAvailable(t)
 
 	capacity, err := ort.NewTensor(ort.NewShape(1), []float32{0.25})
@@ -91,11 +90,11 @@ func TestValidateTFTOutputContract_FailsWhenRuntimeHeadRequiredMissing(t *testin
 
 	err = validateTFTOutputContract(map[string]*ort.Tensor[float32]{
 		"capacity_score": capacity,
-	}, true)
+	})
 	if err == nil {
 		t.Fatal("expected runtime-head-required contract error")
 	}
-	if !strings.Contains(err.Error(), "runtime head is required but missing") {
+	if !strings.Contains(err.Error(), "runtime_score") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

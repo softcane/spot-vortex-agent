@@ -51,6 +51,32 @@ func TestApplyTargetSpotRatioWithRuntimeTargetLerp(t *testing.T) {
 	}
 }
 
+func TestApplyTargetSpotRatioWithRuntimeTargetLerpUsesConfiguredAlpha(t *testing.T) {
+	c := &Controller{
+		targetSpotRatio: map[string]float64{
+			"pool-a": 0.80,
+		},
+	}
+
+	alpha := 0.50
+	runtimeCfg := &config.RuntimeConfig{
+		MinSpotRatio:    0.0,
+		MaxSpotRatio:    1.0,
+		TargetSpotRatio: 0.20,
+		DeterministicPolicy: config.DeterministicPolicyConfig{
+			TargetSpotRatioDriftAlpha: &alpha,
+		},
+	}
+
+	c.applyTargetSpotRatioWithConfig("pool-a", inference.ActionHold, runtimeCfg, true)
+
+	got := c.targetSpotRatio["pool-a"]
+	want := 0.50
+	if diff := got - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("unexpected configured lerp result: got %.6f want %.6f", got, want)
+	}
+}
+
 func TestStepsSinceMigration_UsesConfiguredStepMinutes(t *testing.T) {
 	last := time.Now().Add(-95 * time.Minute)
 	got := stepsSinceMigration(last, 30)

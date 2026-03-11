@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Example Monthly Savings</title>
+  <desc id="desc">Bar chart showing simulated monthly net uplift for 100, 250, and 500 nodes using the deterministic SpotVortex runtime.</desc>
+  <rect width="1200" height="760" fill="#f4f0e8"/>
+
+  <text x="600" y="56" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="36" font-weight="700" fill="#162029">
+    Example Monthly Savings
+  </text>
+  <text x="600" y="88" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#4f5d66">
+    Simulated monthly net uplift from the deterministic policy
+  </text>
+
+  <g font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#5b6770" stroke="#d9d2c4" stroke-width="1">
+    <line x1="120" y1="620" x2="1110" y2="620"/>
+    <line x1="120" y1="525" x2="1110" y2="525"/>
+    <line x1="120" y1="430" x2="1110" y2="430"/>
+    <line x1="120" y1="335" x2="1110" y2="335"/>
+    <line x1="120" y1="240" x2="1110" y2="240"/>
+    <line x1="120" y1="145" x2="1110" y2="145"/>
+  </g>
+
+  <g font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4f5d66">
+    <text x="108" y="625" text-anchor="end">$0</text>
+    <text x="108" y="530" text-anchor="end">$0.6k</text>
+    <text x="108" y="435" text-anchor="end">$1.2k</text>
+    <text x="108" y="340" text-anchor="end">$1.8k</text>
+    <text x="108" y="245" text-anchor="end">$2.4k</text>
+    <text x="108" y="150" text-anchor="end">$3.0k</text>
+  </g>
+
+  <line x1="120" y1="145" x2="120" y2="620" stroke="#162029" stroke-width="2"/>
+  <line x1="120" y1="620" x2="1110" y2="620" stroke="#162029" stroke-width="2"/>
+
+  <g font-family="Helvetica, Arial, sans-serif" text-anchor="middle">
+    <rect x="220" y="530.4" width="180" height="89.6" rx="10" fill="#218c74"/>
+    <text x="310" y="515" font-size="24" font-weight="700" fill="#162029">$566</text>
+    <text x="310" y="658" font-size="24" font-weight="600" fill="#162029">100 nodes</text>
+
+    <rect x="510" y="396.2" width="180" height="223.8" rx="10" fill="#218c74"/>
+    <text x="600" y="381" font-size="24" font-weight="700" fill="#162029">$1.4k</text>
+    <text x="600" y="658" font-size="24" font-weight="600" fill="#162029">250 nodes</text>
+
+    <rect x="800" y="172.4" width="180" height="447.6" rx="10" fill="#218c74"/>
+    <text x="890" y="157" font-size="24" font-weight="700" fill="#162029">$2.8k</text>
+    <text x="890" y="658" font-size="24" font-weight="600" fill="#162029">500 nodes</text>
+  </g>
+
+  <text x="32" y="383" transform="rotate(-90 32 383)" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#162029">
+    USD / month
+  </text>
+
+  <rect x="136" y="106" width="18" height="18" fill="#218c74" rx="4"/>
+  <text x="166" y="121" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#162029">
+    Deterministic runtime, simulated net uplift
+  </text>
+
+  <text x="600" y="698" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
+    Assumptions: 730 hour month, AWS example pools such as c6i.large, m6i.large, and r6i.large, and no outage regression in the offline benchmark.
+  </text>
+  <text x="600" y="724" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#5b6770">
+    Simulated example only. Real savings depend on your live workload mix, pool safety signals, and actual interruption conditions.
+  </text>
+</svg>

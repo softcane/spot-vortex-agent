@@ -39,10 +39,9 @@ func TestRunPoolLevelInference(t *testing.T) {
 
 	// Use relative paths to real ONNX models (same as TestController_Reconcile_DryRun)
 	inf, err := inference.NewInferenceEngine(inference.EngineConfig{
-		TFTModelPath:       "../../models/tft.onnx",
-		RLModelPath:        "../../models/rl_policy.onnx",
-		Logger:             logger,
-		RequireRuntimeHead: false,
+		TFTModelPath: "../../models/tft.onnx",
+		RLModelPath:  "../../models/rl_policy.onnx",
+		Logger:       logger,
 	})
 	if err != nil {
 		t.Logf("Failed to load inference engine: %v", err)
@@ -173,16 +172,4 @@ func TestApplyTargetSpotRatio(t *testing.T) {
 	if diff := c.targetSpotRatio[poolID] - expected; diff > 0.001 || diff < -0.001 {
 		t.Errorf("expected target 0.7, got %f", c.targetSpotRatio[poolID])
 	}
-}
-
-func TestApplyTargetSpotRatioWrapper(t *testing.T) {
-	c := &Controller{
-		targetSpotRatio:  make(map[string]float64),
-		currentSpotRatio: make(map[string]float64),
-		lastWeightChange: make(map[string]time.Time),
-		logger:           slog.Default(),
-	}
-
-	// Call deprecated wrapper
-	c.applyTargetSpotRatio("pool-1", inference.ActionDecrease10)
 }

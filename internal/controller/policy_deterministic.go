@@ -8,30 +8,43 @@ import (
 	"github.com/softcane/spot-vortex-agent/internal/inference"
 )
 
-// Priority score thresholds for workload spot cap calculation.
-// These map from PriorityClass scoring (0-1) to max spot ratio.
+// PolicyResponseMode is the runtime intent emitted by deterministic policy.
+// Node taint, drain, and replacement remain execution tools that map from this
+// intent onto today's discrete actions.
+type PolicyResponseMode string
+
 const (
-	priorityCriticalThreshold = 0.90 // P0/system-critical: max 20% spot
-	priorityHighThreshold     = 0.70 // P1/high-priority: max 50% spot
-	priorityStandardThreshold = 0.45 // P2/standard: max 80% spot
+	ResponseModeAllowGrowth       PolicyResponseMode = "allow_growth"
+	ResponseModeHold              PolicyResponseMode = "hold"
+	ResponseModeFreezeSpot        PolicyResponseMode = "freeze_spot"
+	ResponseModeReduceSpotGradual PolicyResponseMode = "reduce_spot_gradual"
+	ResponseModeReduceSpotFast    PolicyResponseMode = "reduce_spot_fast"
+	ResponseModeEmergencyExit     PolicyResponseMode = "emergency_exit"
+)
+
+// PolicyUrgency is the qualitative urgency attached to a response intent.
+type PolicyUrgency string
+
+const (
+	PolicyUrgencyLow      PolicyUrgency = "low"
+	PolicyUrgencyMedium   PolicyUrgency = "medium"
+	PolicyUrgencyHigh     PolicyUrgency = "high"
+	PolicyUrgencyCritical PolicyUrgency = "critical"
 )
 
 // deterministicDecision captures the reasoning behind a policy decision.
 // Exported for metrics and observability.
 type deterministicDecision struct {
 	Reason        string
+	ResponseMode  PolicyResponseMode
+	Urgency       PolicyUrgency
 	CompositeRisk float64
+	FeatureCap    float64
 	WorkloadCap   float64
 	EffectiveCap  float64
+	PoolSafety    config.PoolSafetyVector
 	IsOOD         bool
 	OODReasons    []string
-}
-
-// capRule maps a feature threshold to a maximum spot ratio cap.
-// Rules are evaluated in order; first match wins (thresholds should be descending).
-type capRule struct {
-	threshold float64
-	maxCap    float64
 }
 
 // PolicyEvaluator encapsulates deterministic policy evaluation logic.
@@ -45,55 +58,44 @@ type capRule struct {
 type PolicyEvaluator struct {
 	cfg *config.RuntimeConfig
 
-	// Cap rules for workload features. Configurable for testing.
-	OutageCapRules      []capRule
-	StartupCapRules     []capRule
-	MigrationCapRules   []capRule
-	UtilizationCapRules []capRule
+	// Cap rules for workload features. Resolved from runtime config for parity.
+	PriorityCapRules    []config.SpotRatioCapRule
+	OutageCapRules      []config.SpotRatioCapRule
+	StartupCapRules     []config.SpotRatioCapRule
+	MigrationCapRules   []config.SpotRatioCapRule
+	UtilizationCapRules []config.SpotRatioCapRule
 }
 
-// NewPolicyEvaluator creates a policy evaluator with default cap rules.
-// Pass nil runtimeCfg to use defaults.
+// NewPolicyEvaluator creates a policy evaluator with config-driven cap rules.
+// Pass nil runtimeCfg to use default runtime config values.
 func NewPolicyEvaluator(runtimeCfg *config.RuntimeConfig) *PolicyEvaluator {
 	cfg := config.DefaultRuntimeConfig()
 	if runtimeCfg != nil {
 		cfg = runtimeCfg
 	}
+	dp := cfg.DeterministicPolicy
 
 	return &PolicyEvaluator{
-		cfg: cfg,
-		OutageCapRules: []capRule{
-			{threshold: 96.0, maxCap: 0.10}, // 96h+ outage penalty → 10% spot max
-			{threshold: 48.0, maxCap: 0.20}, // 48h+ → 20%
-			{threshold: 24.0, maxCap: 0.30}, // 24h+ → 30%
-			{threshold: 10.0, maxCap: 0.50}, // 10h+ → 50%
-		},
-		StartupCapRules: []capRule{
-			{threshold: 600.0, maxCap: 0.20}, // 10min+ startup → 20% spot max
-			{threshold: 300.0, maxCap: 0.30}, // 5min+ → 30%
-			{threshold: 120.0, maxCap: 0.50}, // 2min+ → 50%
-		},
-		MigrationCapRules: []capRule{
-			{threshold: 8.0, maxCap: 0.20}, // $8+ migration cost → 20% spot max
-			{threshold: 5.0, maxCap: 0.30}, // $5+ → 30%
-			{threshold: 2.0, maxCap: 0.60}, // $2+ → 60%
-		},
-		UtilizationCapRules: []capRule{
-			{threshold: 0.95, maxCap: 0.70}, // 95%+ utilization → 70% spot max
-		},
+		cfg:                 cfg,
+		PriorityCapRules:    dp.ResolvedPriorityCapRules(),
+		OutageCapRules:      dp.ResolvedOutagePenaltyCapRules(),
+		StartupCapRules:     dp.ResolvedStartupTimeCapRules(),
+		MigrationCapRules:   dp.ResolvedMigrationCostCapRules(),
+		UtilizationCapRules: dp.ResolvedUtilizationCapRules(),
 	}
 }
 
 // Evaluate runs the deterministic policy and returns an action with reasoning.
 //
 // Decision order:
-//  1. Emergency risk → EMERGENCY_EXIT
-//  2. High risk → DECREASE_30
-//  3. Medium risk → DECREASE_10
-//  4. Cap reached → HOLD
-//  5. OOD conservative → cautious INCREASE_10 or HOLD
-//  6. In-distribution economic → INCREASE_30/INCREASE_10 if economics qualify
-//  7. Default → HOLD
+//  1. Market emergency risk → emergency_exit
+//  2. Market high risk → reduce_spot_fast
+//  3. Market medium risk → reduce_spot_gradual
+//  4. Pool safety overshoot → reduce_spot_fast or reduce_spot_gradual
+//  5. Pool safety freeze → freeze_spot
+//  6. OOD conservative → cautious allow_growth or hold
+//  7. In-distribution economic edge → allow_growth
+//  8. Default → hold
 func (p *PolicyEvaluator) Evaluate(
 	state inference.NodeState,
 	capacityScore float64,
@@ -102,14 +104,16 @@ func (p *PolicyEvaluator) Evaluate(
 	dp := p.cfg.DeterministicPolicy
 
 	compositeRisk := math.Max(capacityScore, runtimeScore)
-	workloadCap := p.computeWorkloadSpotCap(state)
+	workloadCap, featureCap, poolSafety := p.resolveWorkloadSurface(state)
 	effectiveCap := clampRange(workloadCap, p.cfg.MinSpotRatio, p.cfg.MaxSpotRatio)
 
 	isOOD, oodReasons := detectOOD(state, dp.FeatureBuckets)
 	decision := deterministicDecision{
 		CompositeRisk: compositeRisk,
+		FeatureCap:    featureCap,
 		WorkloadCap:   workloadCap,
 		EffectiveCap:  effectiveCap,
+		PoolSafety:    poolSafety,
 		IsOOD:         isOOD,
 		OODReasons:    oodReasons,
 	}
@@ -117,39 +121,73 @@ func (p *PolicyEvaluator) Evaluate(
 	// 1. Emergency: composite risk or runtime score exceeds emergency thresholds
 	if compositeRisk >= dp.EmergencyRiskThreshold || runtimeScore >= dp.RuntimeEmergencyThreshold {
 		decision.Reason = "emergency_risk"
+		decision.ResponseMode = ResponseModeEmergencyExit
+		decision.Urgency = PolicyUrgencyCritical
 		return inference.ActionEmergencyExit, decision
 	}
 
 	// 2. High risk
 	if compositeRisk >= dp.HighRiskThreshold {
 		decision.Reason = "high_risk"
+		decision.ResponseMode = ResponseModeReduceSpotFast
+		decision.Urgency = PolicyUrgencyHigh
 		return inference.ActionDecrease30, decision
 	}
 
 	// 3. Medium risk
 	if compositeRisk >= dp.MediumRiskThreshold {
 		decision.Reason = "medium_risk"
+		decision.ResponseMode = ResponseModeReduceSpotGradual
+		decision.Urgency = PolicyUrgencyMedium
 		return inference.ActionDecrease10, decision
 	}
 
-	// 4. Already at cap
-	if state.CurrentSpotRatio >= effectiveCap {
+	overshoot := state.CurrentSpotRatio - effectiveCap
+	if overshoot > 1e-6 {
+		if overshoot >= 0.25 || poolSafety.RecoveryBudgetViolationRisk >= 0.85 || poolSafety.MinPDBSlackIfOneNodeLost < 0 {
+			decision.Reason = "pool_safety_reduce_fast"
+			decision.ResponseMode = ResponseModeReduceSpotFast
+			decision.Urgency = PolicyUrgencyHigh
+			return inference.ActionDecrease30, decision
+		}
+		decision.Reason = "pool_safety_reduce_gradual"
+		decision.ResponseMode = ResponseModeReduceSpotGradual
+		decision.Urgency = PolicyUrgencyMedium
+		return inference.ActionDecrease10, decision
+	}
+
+	// 5. Already at cap or safety says do not grow.
+	if state.CurrentSpotRatio >= effectiveCap-1e-6 {
 		decision.Reason = "cap_reached"
+		decision.ResponseMode = ResponseModeFreezeSpot
+		decision.Urgency = PolicyUrgencyMedium
+		return inference.ActionHold, decision
+	}
+	if poolSafety.RecoveryBudgetViolationRisk >= 0.60 {
+		decision.Reason = "pool_safety_freeze"
+		decision.ResponseMode = ResponseModeFreezeSpot
+		decision.Urgency = PolicyUrgencyMedium
 		return inference.ActionHold, decision
 	}
 
-	// 5. Out-of-distribution: be conservative
+	// 6. Out-of-distribution: be conservative
 	if isOOD && strings.EqualFold(dp.OODMode, "conservative") {
 		if canIncreaseSpot(state, compositeRisk, dp.OODMaxRiskForIncrease, dp.OODMinSavingsRatioForIncrease, dp.OODMaxPaybackHoursForIncrease) {
 			decision.Reason = "ood_conservative_increase10"
+			decision.ResponseMode = ResponseModeAllowGrowth
+			decision.Urgency = PolicyUrgencyLow
 			return inference.ActionIncrease10, decision
 		}
 		decision.Reason = "ood_conservative_hold"
+		decision.ResponseMode = ResponseModeHold
+		decision.Urgency = PolicyUrgencyLow
 		return inference.ActionHold, decision
 	}
 
-	// 6. In-distribution: economic analysis for increase
+	// 7. In-distribution: economic analysis for increase
 	if canIncreaseSpot(state, compositeRisk, dp.MediumRiskThreshold, dp.MinSavingsRatioForIncrease, dp.MaxPaybackHoursForIncrease) {
+		decision.ResponseMode = ResponseModeAllowGrowth
+		decision.Urgency = PolicyUrgencyLow
 		if effectiveCap-state.CurrentSpotRatio >= 0.25 {
 			decision.Reason = "economic_increase30"
 			return inference.ActionIncrease30, decision
@@ -158,27 +196,34 @@ func (p *PolicyEvaluator) Evaluate(
 		return inference.ActionIncrease10, decision
 	}
 
-	// 7. Default: hold
+	// 8. Default: hold
 	decision.Reason = "hold_no_edge"
+	decision.ResponseMode = ResponseModeHold
+	decision.Urgency = PolicyUrgencyLow
 	return inference.ActionHold, decision
 }
 
-// computeWorkloadSpotCap calculates the maximum safe spot ratio based on workload features.
-// Each feature independently constrains the cap; the minimum across all constraints wins.
+func (p *PolicyEvaluator) resolveWorkloadSurface(state inference.NodeState) (float64, float64, config.PoolSafetyVector) {
+	featureCap := p.computeFeatureSpotCap(state)
+	poolSafety := resolvePoolSafetyVector(state.PoolSafety)
+	workloadCap := math.Min(featureCap, poolSafety.SafeMaxSpotRatio)
+	return clamp01(workloadCap), featureCap, poolSafety
+}
+
+// computeWorkloadSpotCap calculates the maximum safe spot ratio from the
+// feature-rule cap and the Phase 1 pool safety vector. The minimum wins.
 func (p *PolicyEvaluator) computeWorkloadSpotCap(state inference.NodeState) float64 {
+	workloadCap, _, _ := p.resolveWorkloadSurface(state)
+	return workloadCap
+}
+
+// computeFeatureSpotCap derives the feature-rule cap from the configured
+// severity and economics surfaces before pool-safety tightening is applied.
+func (p *PolicyEvaluator) computeFeatureSpotCap(state inference.NodeState) float64 {
 	cap := 1.0
 
-	// Priority-based cap
-	switch {
-	case state.PriorityScore >= priorityCriticalThreshold:
-		cap = math.Min(cap, 0.20)
-	case state.PriorityScore >= priorityHighThreshold:
-		cap = math.Min(cap, 0.50)
-	case state.PriorityScore >= priorityStandardThreshold:
-		cap = math.Min(cap, 0.80)
-	}
-
 	// Feature-based caps (each independently constrains)
+	cap = applyCapRules(state.PriorityScore, cap, p.PriorityCapRules)
 	cap = applyCapRules(state.OutagePenaltyHours, cap, p.OutageCapRules)
 	cap = applyCapRules(state.PodStartupTime, cap, p.StartupCapRules)
 	cap = applyCapRules(state.MigrationCost, cap, p.MigrationCapRules)
@@ -187,8 +232,14 @@ func (p *PolicyEvaluator) computeWorkloadSpotCap(state inference.NodeState) floa
 	return clamp01(cap)
 }
 
-// evaluateDeterministicPolicy is the backward-compatible entry point used by controller.go.
-// It creates a PolicyEvaluator and delegates to it.
+func resolvePoolSafetyVector(v config.PoolSafetyVector) config.PoolSafetyVector {
+	if v.IsZero() {
+		return config.DefaultPoolSafetyVector()
+	}
+	return config.NormalizePoolSafetyVector(v)
+}
+
+// evaluateDeterministicPolicy creates a PolicyEvaluator and delegates to it.
 func evaluateDeterministicPolicy(
 	state inference.NodeState,
 	capacityScore float64,
@@ -223,10 +274,10 @@ func canIncreaseSpot(
 		paybackHours <= maxPaybackHours
 }
 
-func applyCapRules(value float64, currentCap float64, rules []capRule) float64 {
+func applyCapRules(value float64, currentCap float64, rules []config.SpotRatioCapRule) float64 {
 	for _, rule := range rules {
-		if value >= rule.threshold {
-			return math.Min(currentCap, rule.maxCap)
+		if value >= rule.Threshold {
+			return math.Min(currentCap, rule.MaxSpotRatio)
 		}
 	}
 	return currentCap

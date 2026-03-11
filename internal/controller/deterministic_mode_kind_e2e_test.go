@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
+	"github.com/softcane/spot-vortex-agent/internal/config"
 	"github.com/softcane/spot-vortex-agent/internal/inference"
 	svmetrics "github.com/softcane/spot-vortex-agent/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,41 +27,21 @@ import (
 )
 
 func TestDeterministicModeKindInferencePath(t *testing.T) {
-	ctxName := currentKubeContext()
-	if !strings.HasPrefix(ctxName, "kind-") {
-		t.Skipf("skipping Kind deterministic e2e path test, current context=%q", ctxName)
-	}
 	if _, err := os.Stat("../../models/tft.onnx"); err != nil {
 		t.Skip("skipping: ../../models/tft.onnx not found")
 	}
 	if _, err := os.Stat("../../models/rl_policy.onnx"); err != nil {
 		t.Skip("skipping: ../../models/rl_policy.onnx not found")
 	}
+	if _, err := os.Stat("../../models/MODEL_MANIFEST.json"); err != nil {
+		t.Skip("skipping: ../../models/MODEL_MANIFEST.json not found")
+	}
+
+	kubeconfigPath := ensureKindClusterForTest(t)
+	t.Setenv("KUBECONFIG", kubeconfigPath)
 
 	t.Setenv("SPOTVORTEX_METRICS_MODE", "synthetic")
-	t.Cleanup(writeRuntimeConfigForTest(t, `{
-  "risk_multiplier": 1.0,
-  "min_spot_ratio": 0.0,
-  "max_spot_ratio": 1.0,
-  "target_spot_ratio": 0.5,
-  "step_minutes": 30,
-  "policy_mode": "deterministic",
-  "deterministic_policy": {
-    "emergency_risk_threshold": 0.90,
-    "runtime_emergency_threshold": 0.80,
-    "high_risk_threshold": 0.60,
-    "medium_risk_threshold": 0.35,
-    "min_savings_ratio_for_increase": 0.15,
-    "max_payback_hours_for_increase": 6.0,
-    "ood_mode": "conservative",
-    "ood_max_risk_for_increase": 0.25,
-    "ood_min_savings_ratio_for_increase": 0.25,
-    "ood_max_payback_hours_for_increase": 3.0,
-    "feature_buckets": {
-      "source": "../../config/workload_distributions.yaml"
-    }
-  }
-}`))
+	t.Cleanup(stageShippedRuntimeConfigForTest(t))
 
 	k8sClient, err := kubeClientForTest()
 	if err != nil {
@@ -67,17 +49,19 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	}
 	nodes, err := k8sClient.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
-		t.Fatalf("failed to list nodes: %v", err)
+		t.Fatalf("failed to list nodes from ensured Kind cluster: %v", err)
 	}
 	if len(nodes.Items) == 0 {
 		t.Fatal("no nodes found in Kind cluster")
 	}
 
 	infEngine, err := inference.NewInferenceEngine(inference.EngineConfig{
-		TFTModelPath:       "../../models/tft.onnx",
-		RLModelPath:        "../../models/rl_policy.onnx",
-		RequireRuntimeHead: true,
-		Logger:             slog.Default(),
+		TFTModelPath:         "../../models/tft.onnx",
+		RLModelPath:          "../../models/rl_policy.onnx",
+		ModelManifestPath:    "../../models/MODEL_MANIFEST.json",
+		ExpectedCloud:        "aws",
+		RequireModelContract: true,
+		Logger:               slog.Default(),
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "failed to initialize ONNX runtime") ||
@@ -192,6 +176,34 @@ func TestDeterministicModeKindInferencePath(t *testing.T) {
 	}
 }
 
+func stageShippedRuntimeConfigForTest(t *testing.T) func() {
+	t.Helper()
+
+	runtimePath := filepath.Clean(filepath.Join("..", "..", "config", "runtime.json"))
+	cfg, err := config.LoadRuntimeConfig(runtimePath)
+	if err != nil {
+		t.Fatalf("failed to load shipped runtime config %s: %v", runtimePath, err)
+	}
+	if cfg.PolicyMode != config.PolicyModeDeterministic {
+		t.Fatalf("shipped runtime policy_mode=%q, want %q", cfg.PolicyMode, config.PolicyModeDeterministic)
+	}
+	if cfg.StepMinutes != 10 {
+		t.Fatalf("shipped runtime step_minutes=%d, want 10", cfg.StepMinutes)
+	}
+	if cfg.MinSpotRatio != 0.167 {
+		t.Fatalf("shipped runtime min_spot_ratio=%.3f, want 0.167", cfg.MinSpotRatio)
+	}
+	if cfg.MaxSpotRatio != 1.0 {
+		t.Fatalf("shipped runtime max_spot_ratio=%.3f, want 1.0", cfg.MaxSpotRatio)
+	}
+
+	payload, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatalf("failed to read shipped runtime config %s: %v", runtimePath, err)
+	}
+	return writeRuntimeConfigForTest(t, string(payload))
+}
+
 func writeRuntimeConfigForTest(t *testing.T, content string) func() {
 	t.Helper()
 
@@ -291,23 +303,6 @@ func scrapeMetricsText(t *testing.T) string {
 	return string(body)
 }
 
-func currentKubeContext() string {
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		kubeconfig = filepath.Join(home, ".kube", "config")
-	}
-
-	cfg, err := clientcmd.LoadFromFile(kubeconfig)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.CurrentContext)
-}
-
 func kubeClientForTest() (*kubernetes.Clientset, error) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -327,4 +322,182 @@ func kubeClientForTest() (*kubernetes.Clientset, error) {
 		return nil, fmt.Errorf("create kube clientset: %w", err)
 	}
 	return clientset, nil
+}
+
+func ensureKindClusterForTest(t *testing.T) string {
+	t.Helper()
+
+	if _, err := exec.LookPath("kind"); err != nil {
+		t.Skipf("skipping Kind deterministic e2e path test: kind not installed: %v", err)
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skipf("skipping Kind deterministic e2e path test: docker not installed: %v", err)
+	}
+	if err := runTestCommand("", "docker", "info", "--format", "{{.ServerVersion}}"); err != nil {
+		t.Skipf("skipping Kind deterministic e2e path test: docker unavailable: %v", err)
+	}
+
+	clusterName := strings.TrimSpace(os.Getenv("SPOTVORTEX_KIND_CLUSTER_NAME"))
+	if clusterName == "" {
+		clusterName = "spotvortex-controller-e2e"
+	}
+	kubeconfigPath := filepath.Join(t.TempDir(), "kind.kubeconfig")
+	configPath := prepareKindConfigForTest(t)
+
+	reachable := false
+	if kindClusterExists(t, clusterName) {
+		if err := writeKindKubeconfig(clusterName, kubeconfigPath); err == nil {
+			if err := waitForReadyKindNodes(kubeconfigPath, 45*time.Second); err == nil {
+				reachable = true
+			}
+		}
+	}
+
+	if !reachable {
+		if kindClusterExists(t, clusterName) {
+			if err := runTestCommand("", "kind", "delete", "cluster", "--name", clusterName); err != nil {
+				t.Fatalf("failed to delete stale Kind cluster %q: %v", clusterName, err)
+			}
+		}
+		if err := runTestCommand("", "kind", "create", "cluster",
+			"--name", clusterName,
+			"--config", configPath,
+			"--kubeconfig", kubeconfigPath,
+			"--wait", "120s",
+		); err != nil {
+			t.Fatalf("failed to create Kind cluster %q: %v", clusterName, err)
+		}
+		if err := waitForReadyKindNodes(kubeconfigPath, 120*time.Second); err != nil {
+			t.Fatalf("Kind cluster %q did not become ready: %v", clusterName, err)
+		}
+
+		keepCluster := strings.EqualFold(os.Getenv("SPOTVORTEX_KEEP_KIND_CLUSTER"), "true") ||
+			os.Getenv("SPOTVORTEX_KEEP_KIND_CLUSTER") == "1"
+		if !keepCluster {
+			t.Cleanup(func() {
+				_ = runTestCommand("", "kind", "delete", "cluster", "--name", clusterName)
+			})
+		}
+	}
+
+	return kubeconfigPath
+}
+
+func prepareKindConfigForTest(t *testing.T) string {
+	t.Helper()
+
+	basePath := filepath.Clean(filepath.Join("..", "..", "tests", "e2e", "kind-config.yaml"))
+	content, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("failed to read kind config %q: %v", basePath, err)
+	}
+
+	// The deterministic controller e2e path only needs a labeled Kind cluster.
+	// It does not require the monitoring NodePort, so strip the fixed host port
+	// mapping to avoid brittle collisions with other local services and tests.
+	sanitized := strings.ReplaceAll(
+		string(content),
+		"    extraPortMappings:\n      - containerPort: 30000\n        hostPort: 30000\n        protocol: TCP\n",
+		"",
+	)
+
+	configPath := filepath.Join(t.TempDir(), "kind-config.yaml")
+	if err := os.WriteFile(configPath, []byte(sanitized), 0o644); err != nil {
+		t.Fatalf("failed to write sanitized kind config: %v", err)
+	}
+	return configPath
+}
+
+func kindClusterExists(t *testing.T, clusterName string) bool {
+	t.Helper()
+
+	cmd := exec.Command("kind", "get", "clusters")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(line) == clusterName {
+			return true
+		}
+	}
+	return false
+}
+
+func writeKindKubeconfig(clusterName, kubeconfigPath string) error {
+	cmd := exec.Command("kind", "get", "kubeconfig", "--name", clusterName)
+	output, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(kubeconfigPath, output, 0o600)
+}
+
+func waitForReadyKindNodes(kubeconfigPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		restCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		clientset, err := kubernetes.NewForConfig(restCfg)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		nodes, err := clientset.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if len(nodes.Items) < 3 {
+			lastErr = fmt.Errorf("expected at least 3 nodes, got %d", len(nodes.Items))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		readyNodes := 0
+		for _, node := range nodes.Items {
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == "Ready" && cond.Status == "True" {
+					readyNodes++
+					break
+				}
+			}
+		}
+		if readyNodes == len(nodes.Items) {
+			return nil
+		}
+
+		lastErr = fmt.Errorf("ready nodes %d/%d", readyNodes, len(nodes.Items))
+		time.Sleep(2 * time.Second)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for Kind nodes")
+	}
+	return lastErr
+}
+
+func runTestCommand(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, trimmed)
+	}
+	return nil
 }
