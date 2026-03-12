@@ -9,7 +9,7 @@ It helps SRE and FinOps teams increase Spot usage at the node-pool level without
 
 ![Example monthly savings for m5.2xlarge](docs/assets/deterministic_monthly_uplift_example.svg)
 
-The chart above is one worked example, not a production guarantee. It uses the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
+The chart above is a worked benchmark example using the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
 
 ## What You Deploy Today
 
@@ -35,11 +35,11 @@ The shipped runtime config lives in [config/runtime.json](config/runtime.json).
 
 The control unit is the node pool, not the individual pod.
 
-## Example: One `m5.2xlarge` Node Over One Month
+## Reference Economics: One `m5.2xlarge` Node Over One Month
 
-This is a simulation-backed scenario, not a production guarantee.
+This section converts the latest offline benchmark month for the `m5.2xlarge` slice into simple unit economics.
 
-In the latest offline benchmark month for the `m5.2xlarge` slice, the shipped deterministic policy:
+In that benchmark month, the shipped deterministic policy:
 
 - kept effective Spot residency at `79.05%`
 - recorded `0` outages
@@ -66,7 +66,7 @@ This example is useful because it is easy to audit:
 | 1-Year Reserved | `$0.242/hr` | `$0.142/hr` | `$176.66` | `$118.95` | `$57.71` | `$5,770.55` |
 | 3-Year Reserved | `$0.166/hr` | `$0.142/hr` | `$121.18` | `$107.33` | `$13.85` | `$1,384.93` |
 
-These are gross compute-rate savings, not a guarantee of realized finance savings. Realized value depends on commitment utilization, whether commitments are stranded, and whether marginal spend is truly displaced.
+These are gross compute-rate savings. Realized finance impact depends on your marginal baseline, commitment utilization, and whether the spend you move to Spot is actually displaced.
 
 
 ### Assumptions
@@ -79,33 +79,45 @@ These are gross compute-rate savings, not a guarantee of realized finance saving
 - Spot rate and baseline rates are illustrative example rates
 - actual realized finance savings depend on whether commitment-covered spend is truly displaced
 
-### What This Does Not Claim
+### How To Use This
 
-- not a production guarantee
-- not a claim that every cluster reaches `79.05%` Spot residency
-- not a claim that all committed spend can be replaced dollar-for-dollar
-- not a claim that every node pool should be pushed this far on Spot
+- replace the example baseline with your real marginal cost
+- use the benchmark table to size upside before rollout
+- validate realized results from live telemetry once the controller is running in your cluster
 
-If you are a FinOps or SRE reader, replace the example baseline with your actual marginal cost:
+Typical baselines:
 
 - On-Demand
 - Reserved or Savings Plan effective marginal rate
-- or your own internal chargeback rate
+- internal chargeback rate
 
 ## How The Runtime Thinks About Risk
 
-The runtime does not only use average workload severity. It also carries a pool-safety vector that approximates blast radius for each node pool, including:
+The runtime thinks in terms of node-pool blast radius and recovery safety. It carries a pool-safety vector for each node pool, including:
 
-- `critical_service_spot_concentration`
-- `min_pdb_slack_if_one_node_lost`
-- `min_pdb_slack_if_two_nodes_lost`
-- `stateful_pod_fraction`
-- `restart_p95_seconds`
-- `recovery_budget_violation_risk`
-- `spare_od_headroom_nodes`
-- `zone_diversification_score`
-- `evictable_pod_fraction`
-- `safe_max_spot_ratio`
+- `critical_service_spot_concentration`: share of critical-service pods in the pool that are currently running on Spot.
+- `min_pdb_slack_if_one_node_lost`: worst remaining PDB slack if the pool loses its riskiest single node.
+- `min_pdb_slack_if_two_nodes_lost`: worst remaining PDB slack if the pool loses its two riskiest node placements.
+- `stateful_pod_fraction`: share of workload pods in the pool that are owned by StatefulSets.
+- `restart_p95_seconds`: pool-level P95 restart or recovery proxy in seconds.
+- `recovery_budget_violation_risk`: normalized risk that a Spot loss would push the pool outside its recovery budget.
+- `spare_od_headroom_nodes`: estimated immediate On-Demand headroom still available in the pool.
+- `zone_diversification_score`: score for how well the pool is spread across zones.
+- `evictable_pod_fraction`: share of workload pods that are currently safe to evict voluntarily.
+- `safe_max_spot_ratio`: the maximum Spot ratio the deterministic policy considers safe for the pool right now.
+
+Today these fields are computed locally from pods, PDBs, node labels, and pool utilization:
+
+- `critical_service_spot_concentration` = `critical pods on Spot / total critical pods`; a pod is treated as critical if `spotvortex.io/critical=true` or its priority score is `>= 0.75`.
+- `min_pdb_slack_if_one_node_lost` = minimum across matching PDBs of `disruptionsAllowed - max pods from that PDB on any one node`.
+- `min_pdb_slack_if_two_nodes_lost` = minimum across matching PDBs of `disruptionsAllowed - (pods on densest node + pods on second-densest node)`.
+- `stateful_pod_fraction` = `StatefulSet-owned workload pods / workload pods`; workload pods exclude DaemonSets.
+- `restart_p95_seconds` = CPU-weighted P95 of startup-to-ready latency, with `spotvortex.io/startup-time` as an override when present.
+- `recovery_budget_violation_risk` = max heuristic signal from low or negative PDB slack, high critical-pod Spot concentration, high stateful fraction, slow restart P95, low On-Demand headroom, weak zone spread, and low evictable fraction.
+- `spare_od_headroom_nodes` = `on_demand_nodes * (1 - pool_utilization)` using the runtime’s current pool utilization feed.
+- `zone_diversification_score` = `0.0` for one zone, `0.5` for two zones, `1.0` for three or more zones.
+- `evictable_pod_fraction` = `currently voluntary-evictable workload pods / workload pods`; a pod counts as evictable when no matching PDB blocks it, or when `disruptionsAllowed > 0`.
+- `safe_max_spot_ratio` = the minimum cap produced by deterministic thresholds over the safety vector above, tightening as blast radius or recovery risk increases.
 
 This keeps the decision node-level while making the policy more sensitive to real service impact.
 
@@ -130,7 +142,7 @@ The runtime facts that matter for rollout are:
 - TFT is the live market risk input
 - RL is shadow telemetry only
 - bundle checksums are enforced through `models/MODEL_MANIFEST.json`
-- production value has to be confirmed with live telemetry
+- production outcomes are confirmed with live telemetry
 
 ## What To Validate In Your Cluster
 
@@ -142,57 +154,13 @@ Before calling a rollout successful, verify:
 - interruption and recovery behavior stays acceptable
 - savings improve without creating service impact
 
-The `m5.2xlarge` example is useful for planning. Live telemetry is what decides production success.
-
-## Quick Validation
-
-Focused runtime validation:
-
-```bash
-go test ./internal/config/...
-go test ./internal/inference/...
-go test ./internal/controller/...
-```
-
-Deterministic Kind end-to-end path:
-
-```bash
-go test -v ./internal/controller -run TestDeterministicModeKindInferencePath -count=1
-```
-
-Release/install proof on Kind:
-
-```bash
-bash hack/verify-release-kind-install.sh
-```
-
-The default verification mode is `VERIFY_MODE=local`. It builds the current repo image, loads it into Kind, and installs the in-repo chart. That is the correct runtime-proof path for this repository.
-
-For a published OCI release check, use an explicit chart version:
-
-```bash
-VERIFY_MODE=published CHART_VERSION=<chart-version> bash hack/verify-release-kind-install.sh
-```
-
-If your published image is private, set `IMAGE_PULL_SECRET_NAME=<secret>` instead of assuming anonymous GHCR pulls will work.
+The `m5.2xlarge` example is for planning and sizing. Live telemetry is what confirms production results.
 
 ## Running Locally
 
-The agent expects:
-
-- Kubernetes access
-- ONNX runtime library available to the process
-- model bundle in `models/`
-- runtime config in `config/runtime.json`
-
-Local run path:
-
 ```bash
-go run ./cmd/agent run
+helm upgrade --install spotvortex charts/spotvortex --namespace spotvortex --create-namespace
 ```
-
-For shadow-style local testing, use dry-run deployment settings rather than editing the shipped runtime policy contract.
-
 
 ## Repository Layout
 
@@ -212,4 +180,4 @@ For shadow-style local testing, use dry-run deployment settings rather than edit
 - RL is shadow-only
 - `10` minutes is the active cadence
 - manifest-verified bundle loading is required
-- customer-facing savings examples should be expressed against a clear baseline rate
+- savings examples should be expressed against a clear baseline rate
