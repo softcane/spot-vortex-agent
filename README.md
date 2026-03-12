@@ -54,13 +54,6 @@ monthly_system_cost = 730 * (spot_residency * spot_rate + (1 - spot_residency) *
 monthly_savings = 730 * spot_residency * (baseline_rate - spot_rate)
 ```
 
-This example is useful because it is easy to explain and audit:
-
-- one node type
-- one clear Spot residency number
-- one clear monthly cost formula
-- three baseline cases that FinOps teams already understand
-
 | Baseline | Baseline Rate | Spot Rate | Baseline Monthly Cost / Node | SpotVortex Monthly Cost / Node | Savings / Node / Month | Savings At 100 Nodes / Month |
 |---|---:|---:|---:|---:|---:|---:|
 | On-Demand | `$0.384/hr` | `$0.142/hr` | `$280.32` | `$140.67` | `$139.65` | `$13,964.74` |
