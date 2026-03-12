@@ -19,7 +19,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -32,7 +31,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "options": {
         "colorMode": "value",
@@ -46,10 +50,8 @@
         },
         "textMode": "auto"
       },
-      "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(spotvortex_potential_savings_pool_total_usd)",
           "legendFormat": "Total Monthly Savings",
           "refId": "A"
@@ -65,8 +67,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -77,7 +80,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -93,7 +101,6 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "sum(spotvortex_nodes_optimizable)",
           "legendFormat": "Optimizable Nodes",
           "refId": "A"
@@ -109,8 +116,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -123,7 +131,12 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
       "id": 3,
       "options": {
         "colorMode": "value",
@@ -139,7 +152,6 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "avg(spotvortex_spot_ratio_current)",
           "legendFormat": "Current Spot Ratio",
           "refId": "A"
@@ -155,41 +167,68 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "bars",
             "fillOpacity": 80,
             "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "auto",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
           "unit": "currencyUSD"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "id": 4,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_potential_savings_pool_total_usd",
           "legendFormat": "{{pool}}",
           "refId": "A"
@@ -205,47 +244,74 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "auto",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
           "unit": "percentunit"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
       "id": 5,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_risk_score",
           "legendFormat": "{{pool}}",
           "refId": "A"
         }
       ],
-      "title": "Risk Score by Pool",
+      "title": "Current Risk Score by Pool",
       "type": "timeseries"
     },
     {
@@ -255,56 +321,135 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "custom": {
             "align": "auto",
-            "cellOptions": { "type": "auto" },
+            "cellOptions": {
+              "type": "auto"
+            },
             "inspect": false
           },
           "mappings": [
-            { "options": { "0": { "color": "green", "index": 0, "text": "HOLD" } }, "type": "value" },
-            { "options": { "1": { "color": "yellow", "index": 1, "text": "DECREASE_10" } }, "type": "value" },
-            { "options": { "2": { "color": "orange", "index": 2, "text": "DECREASE_30" } }, "type": "value" },
-            { "options": { "3": { "color": "blue", "index": 3, "text": "INCREASE_10" } }, "type": "value" },
-            { "options": { "4": { "color": "purple", "index": 4, "text": "INCREASE_30" } }, "type": "value" },
-            { "options": { "5": { "color": "red", "index": 5, "text": "EMERGENCY" } }, "type": "value" }
+            {
+              "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "HOLD"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "1": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "DECREASE_10"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "2": {
+                  "color": "orange",
+                  "index": 2,
+                  "text": "DECREASE_30"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "3": {
+                  "color": "blue",
+                  "index": 3,
+                  "text": "INCREASE_10"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "4": {
+                  "color": "purple",
+                  "index": 4,
+                  "text": "INCREASE_30"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "5": {
+                  "color": "red",
+                  "index": 5,
+                  "text": "EMERGENCY_EXIT"
+                }
+              },
+              "type": "value"
+            }
           ],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Savings/hr" },
-            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+            "matcher": {
+              "id": "byName",
+              "options": "Savings/hr"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
       "id": 6,
       "options": {
         "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        },
         "showHeader": true
       },
-      "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_potential_savings_hourly_usd",
           "format": "table",
           "instant": true,
-          "legendFormat": "",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_recommended_action",
           "format": "table",
           "instant": true,
-          "legendFormat": "",
           "refId": "B"
         }
       ],
-      "title": "Node Recommendations",
+      "title": "Dry-Run Opportunities by Node",
       "transformations": [
         {
           "id": "merge",
@@ -313,7 +458,10 @@
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "__name__": true },
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
             "indexByName": {},
             "renameByName": {
               "Value #A": "Savings/hr",
@@ -334,99 +482,75 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+          "color": {
+            "mode": "palette-classic"
           },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "id": 7,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "increase(spotvortex_dry_run_cumulative_savings_usd[24h])",
-          "legendFormat": "Savings Identified (24h)",
-          "refId": "A"
-        }
-      ],
-      "title": "Cumulative Savings Identified (24h)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 30,
             "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "auto",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
           "unit": "currencyUSD"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "id": 8,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_spot_price_usd",
-          "legendFormat": "Spot: {{instance}}",
+          "legendFormat": "Spot {{instance}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "spotvortex_ondemand_price_usd",
-          "legendFormat": "OD: {{instance}}",
+          "legendFormat": "On-Demand {{instance}}",
           "refId": "B"
         }
       ],
@@ -435,13 +559,17 @@
     }
   ],
   "refresh": "30s",
-  "schemaVersion": 38,
+  "schemaVersion": 39,
   "style": "dark",
-  "tags": ["spotvortex", "dry-run", "savings"],
+  "tags": ["spotvortex", "dry-run"],
   "templating": {
     "list": [
       {
-        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
         "hide": 0,
         "includeAll": false,
         "label": "Datasource",
@@ -457,11 +585,13 @@
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
-  "timepicker": {},
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timezone": "",
   "title": "SpotVortex Dry-Run Value Preview",
   "uid": "spotvortex-dryrun",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

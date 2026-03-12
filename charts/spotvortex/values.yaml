@@ -81,6 +81,9 @@ agent:
 
   replicas: 1
   metricsPort: 8080
+  metricsService:
+    enabled: true
+    annotations: {}
   probes:
     enabled: true
     readiness:

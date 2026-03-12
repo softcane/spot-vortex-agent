@@ -1,0 +1,24 @@
+{{- if .Values.agent.metricsService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spotvortex.fullname" . }}-metrics
+  labels:
+    {{- include "spotvortex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+    spotvortex.io/metrics: "true"
+  {{- with .Values.agent.metricsService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "spotvortex.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+  ports:
+    - name: metrics
+      port: {{ .Values.agent.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

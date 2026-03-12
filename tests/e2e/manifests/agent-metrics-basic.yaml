@@ -5,6 +5,7 @@ metadata:
   namespace: spotvortex-system
   labels:
     app: spotvortex-agent
+    spotvortex.io/metrics: "true"
 spec:
   # Safe default: service-based scrape target for an in-cluster SpotVortex agent.
   # This avoids accidentally scraping unrelated host services on :8080.

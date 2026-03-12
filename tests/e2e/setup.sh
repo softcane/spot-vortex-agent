@@ -96,7 +96,7 @@ if [ "$INSTALL_MONITORING" = "1" ]; then
         kubectl apply -f "$SCRIPT_DIR/manifests/agent-metrics-host-endpoints.yaml"
         echo "WARNING: host-endpoints mode can scrape the wrong local service if :8080 is in use."
     else
-        echo "Using safe service-based metrics target (expects in-cluster spotvortex-agent Service endpoints)"
+        echo "Using safe service-based metrics discovery (scrapes Services labeled spotvortex.io/metrics=true)"
     fi
 
     echo "Provisioning SpotVortex dashboards into Grafana (dryrun + ops-shadow)..."
@@ -155,7 +155,7 @@ if [ "$INSTALL_MONITORING" = "1" ]; then
     echo ""
     echo "Metrics scrape source mode:"
     echo "  AGENT_METRICS_SOURCE=$AGENT_METRICS_SOURCE"
-    echo "  - service (default): scrape in-cluster spotvortex-agent Service endpoints in namespace spotvortex-system"
+    echo "  - service (default): scrape in-cluster Services labeled spotvortex.io/metrics=true"
     echo "  - host-endpoints: opt-in bridge to Docker Desktop host :8080 (be careful with port conflicts)"
 fi
 echo ""

@@ -4,6 +4,34 @@ metadata:
   name: monitoring
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-monitoring
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-config
@@ -19,10 +47,27 @@ data:
 
     scrape_configs:
       - job_name: spotvortex-agent
-        metrics_path: /metrics
-        static_configs:
-          - targets:
-              - spotvortex-agent-metrics.spotvortex-system.svc.cluster.local:8080
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_service_label_spotvortex_io_metrics
+            action: keep
+            regex: "true"
+          - source_labels:
+              - __meta_kubernetes_endpoint_port_name
+            action: keep
+            regex: metrics
+          - source_labels:
+              - __meta_kubernetes_endpoint_ready
+            action: keep
+            regex: "true"
+          - source_labels:
+              - __meta_kubernetes_namespace
+            target_label: namespace
+          - source_labels:
+              - __meta_kubernetes_service_name
+            target_label: service
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -78,6 +123,7 @@ spec:
       labels:
         app: prometheus
     spec:
+      serviceAccountName: prometheus
       containers:
         - name: prometheus
           image: prom/prometheus:v2.52.0
