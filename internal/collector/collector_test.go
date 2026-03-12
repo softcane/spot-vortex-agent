@@ -346,6 +346,98 @@ func TestCollector_CollectPoolSafetyVector(t *testing.T) {
 	}
 }
 
+func TestCollector_CollectPoolSafetyVector_UsesNormalizedCapacityLabels(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	logger := slog.Default()
+	collector := NewCollector(client, logger)
+	collector.SetUtilizationProvider(&MockUtilizationProvider{
+		Util: map[string]float64{"api:c5.xlarge:us-east-1a": 0.5},
+	})
+
+	nodes := []*corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ca-spot",
+				Labels: map[string]string{
+					"spotvortex.io/manager":            "cluster-autoscaler",
+					"spotvortex.io/capacity-type":      "spot",
+					"topology.kubernetes.io/zone":      "us-east-1a",
+					"node.kubernetes.io/instance-type": "c5.xlarge",
+					WorkloadPoolLabel:                  "api",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "mng-od",
+				Labels: map[string]string{
+					"eks.amazonaws.com/nodegroup":      "mng-a",
+					"eks.amazonaws.com/capacityType":   "ON_DEMAND",
+					"topology.kubernetes.io/zone":      "us-east-1a",
+					"node.kubernetes.io/instance-type": "c5.xlarge",
+					WorkloadPoolLabel:                  "api",
+				},
+			},
+		},
+	}
+	for _, node := range nodes {
+		if _, err := client.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create node %s: %v", node.Name, err)
+		}
+	}
+
+	startTime := metav1.NewTime(time.Now().Add(-20 * time.Second))
+	readyTime := metav1.NewTime(time.Now().Add(-10 * time.Second))
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "critical-api",
+			Namespace: "default",
+			Annotations: map[string]string{
+				AnnotationMigrationTier: "0",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: "ca-spot",
+			Containers: []corev1.Container{{
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("100m"),
+					},
+				},
+			}},
+		},
+		Status: corev1.PodStatus{
+			StartTime: &startTime,
+			Conditions: []corev1.PodCondition{{
+				Type:               corev1.PodReady,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: readyTime,
+			}},
+		},
+	}
+	if _, err := client.CoreV1().Pods("default").Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	metrics, err := collector.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect failed: %v", err)
+	}
+
+	features, ok := metrics.PoolFeatures["api:c5.xlarge:us-east-1a"]
+	if !ok {
+		t.Fatalf("expected extended pool features to be present")
+	}
+
+	ps := features.PoolSafety
+	if ps.CriticalServiceSpotConcentration != 1.0 {
+		t.Fatalf("expected critical concentration 1.0 from CA spot node, got %.2f", ps.CriticalServiceSpotConcentration)
+	}
+	if ps.SpareODHeadroomNodes != 0.5 {
+		t.Fatalf("expected OD headroom 0.5 from MNG on-demand node, got %.2f", ps.SpareODHeadroomNodes)
+	}
+}
+
 func TestParseHoursDuration(t *testing.T) {
 	tests := []struct {
 		input string

@@ -33,6 +33,14 @@ data:
       region: {{ .Values.gcp.region | quote }}
       machineTypes: {{ .Values.gcp.machineTypes | toJson }}
 
+    autoscaling:
+      enabled: {{ .Values.autoscaling.enabled }}
+      discoveryTags:
+        pool: {{ .Values.autoscaling.discoveryTags.pool | quote }}
+        type: {{ .Values.autoscaling.discoveryTags.type | quote }}
+      nodeReadyTimeoutSeconds: {{ .Values.autoscaling.nodeReadyTimeoutSeconds }}
+      pollIntervalSeconds: {{ .Values.autoscaling.pollIntervalSeconds }}
+
     karpenter:
       enabled: {{ .Values.karpenter.enabled }}
       useExtendedPoolId: {{ .Values.karpenter.useExtendedPoolId }}

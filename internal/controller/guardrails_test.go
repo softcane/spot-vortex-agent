@@ -203,14 +203,24 @@ func TestCheckClusterFraction(t *testing.T) {
 	k8s := k8sfake.NewSimpleClientset()
 	g := NewGuardrailChecker(k8s, slog.Default(), 0.2) // 20% limit
 
-	// Create 10 nodes (capacity type spot)
+	// Create 10 spot nodes using the mixed label surfaces the runtime now supports.
 	for i := 0; i < 10; i++ {
+		labels := map[string]string{}
+		switch i % 4 {
+		case 0:
+			labels["karpenter.sh/capacity-type"] = "spot"
+		case 1:
+			labels["spotvortex.io/capacity-type"] = "spot"
+		case 2:
+			labels["eks.amazonaws.com/capacityType"] = "SPOT"
+			labels["eks.amazonaws.com/nodegroup"] = "mng-a"
+		default:
+			labels["node.kubernetes.io/lifecycle"] = "Ec2Spot"
+		}
 		node := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: fmt.Sprintf("node-%d", i),
-				Labels: map[string]string{
-					"karpenter.sh/capacity-type": "spot",
-				},
+				Name:   fmt.Sprintf("node-%d", i),
+				Labels: labels,
 			},
 		}
 		k8s.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})

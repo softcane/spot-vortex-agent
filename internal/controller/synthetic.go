@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
 	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -34,10 +35,6 @@ func (c *Controller) nodeInfoMap(ctx context.Context) (map[string]nodeInfo, erro
 	info := make(map[string]nodeInfo, len(nodes.Items))
 	for _, node := range nodes.Items {
 		labels := node.Labels
-		capacityType := ""
-		if labels != nil {
-			capacityType = labels["karpenter.sh/capacity-type"]
-		}
 		isFake := false
 		for _, taint := range node.Spec.Taints {
 			if taint.Key == "spotvortex.io/fake" {
@@ -60,7 +57,7 @@ func (c *Controller) nodeInfoMap(ctx context.Context) (map[string]nodeInfo, erro
 
 		base := nodeInfo{
 			name:         node.Name,
-			isSpot:       capacityType == "spot",
+			isSpot:       capacity.IsSpotLabels(labels),
 			isFake:       isFake,
 			isManaged:    isManaged,
 			isControl:    isControl,
@@ -98,10 +95,6 @@ func (c *Controller) syntheticNodeMetrics(ctx context.Context) ([]metrics.NodeMe
 	results := make([]metrics.NodeMetrics, 0, len(nodes.Items))
 	for _, node := range nodes.Items {
 		labels := node.Labels
-		capacityType := ""
-		if labels != nil {
-			capacityType = labels["karpenter.sh/capacity-type"]
-		}
 
 		cpu, mem := c.metric.Next(node.Name)
 		results = append(results, metrics.NodeMetrics{
@@ -110,7 +103,7 @@ func (c *Controller) syntheticNodeMetrics(ctx context.Context) ([]metrics.NodeMe
 			InstanceType:       labelValue(labels, "node.kubernetes.io/instance-type", "unknown"),
 			CPUUsagePercent:    cpu,
 			MemoryUsagePercent: mem,
-			IsSpot:             capacityType == "spot",
+			IsSpot:             capacity.IsSpotLabels(labels),
 			Timestamp:          now,
 		})
 	}

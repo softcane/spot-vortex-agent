@@ -3,13 +3,13 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/softcane/spot-vortex-agent)](https://goreportcard.com/report/github.com/softcane/spot-vortex-agent)
 
-SpotVortex Agent is the in-cluster controller for safe Spot adoption.
+SpotVortex Agent helps SRE and FinOps teams use more Spot without giving up control of service risk.
 
-It helps SRE and FinOps teams move more Kubernetes capacity onto Spot without losing control of service risk. SpotVortex watches market risk and pool health, then adjusts Spot exposure at the node-pool level in a predictable way.
+It runs inside the cluster, watches market risk and pool health, and adjusts Spot exposure at the node-pool level. The goal is simple: get the savings from Spot without turning every interruption into an incident.
 
 ![Example monthly savings for m5.2xlarge](docs/assets/deterministic_monthly_uplift_example.svg)
 
-The chart above is a benchmark example based on the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
+The chart above is a benchmark example based on the current shipped runtime: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
 
 ## What You Deploy Today
 
@@ -18,9 +18,11 @@ The chart above is a benchmark example based on the current shipped runtime post
 - Spot bounds: `min_spot_ratio=0.167`, `max_spot_ratio=1.0`
 - Preferred operating point: `target_spot_ratio=0.5`
 - Market hazard model: transition-aware TFT from `models/tft.onnx`
-- RL: shadow-only; it records comparison telemetry and does not actuate production changes
+- RL: shadow-only
 - Bundle contract: `models/MODEL_MANIFEST.json`
 - Cloud scope: AWS, `60` supported instance families
+
+SpotVortex is built for EKS on EC2 capacity pools. It supports both Karpenter and ASG-backed Cluster Autoscaler environments. Karpenter is the strongest and best-covered path today. Cluster Autoscaler support works through tagged twin ASGs and the same deterministic runtime policy.
 
 The current AWS coverage is focused on common production pools: compute (`c5`, `c6`, `c7`), general purpose (`m5`, `m6`, `m7`), memory optimized (`r5`, `r6`, `r7`), and burstable (`t2`, `t3`, `t4g`), including Graviton and flex variants where available. The exact enforced scope lives in `models/MODEL_MANIFEST.json`.
 
@@ -34,7 +36,7 @@ The shipped runtime config lives in [config/runtime.json](config/runtime.json).
 4. Applies that decision with node-pool steering and controlled drain behavior.
 5. Records RL recommendations in shadow mode for comparison only.
 
-The control unit is the node pool, not the individual pod.
+The control unit is the node pool, not the individual pod. On Karpenter, that means steering NodePools before drains. On Cluster Autoscaler, that means working through paired Spot and On-Demand ASGs.
 
 ## Reference Economics: One `m5.2xlarge` Node Over One Month
 
@@ -60,7 +62,7 @@ monthly_savings = 730 * spot_residency * (baseline_rate - spot_rate)
 | 1-Year Reserved | `$0.242/hr` | `$0.142/hr` | `$176.66` | `$118.95` | `$57.71` | `$5,770.55` |
 | 3-Year Reserved | `$0.166/hr` | `$0.142/hr` | `$121.18` | `$107.33` | `$13.85` | `$1,384.93` |
 
-These are gross compute-rate savings. Realized FinOps impact depends on your marginal baseline, commitment utilization, and whether the spend you move to Spot is actually displaced.
+These are gross compute-rate savings. Your realized FinOps result depends on what baseline cost you are actually displacing.
 
 
 ### Assumptions
@@ -121,7 +123,7 @@ If some pool-safety signals are unavailable, the runtime falls back to safe dete
 
 ## How To Roll It Out
 
-Treat SpotVortex as an operating control for capacity risk, not just a model bundle.
+Treat SpotVortex as an operating control for capacity risk, not just a savings feature.
 
 Recommended rollout path:
 
@@ -131,14 +133,6 @@ Recommended rollout path:
 4. Start with a small set of non-critical pools.
 5. Watch interruption, restart, drain, recovery, and cost telemetry closely.
 6. Expand only when the results are stable and the savings are real.
-
-The runtime facts that matter for rollout are:
-
-- the shipped controller is deterministic
-- TFT is the live market risk input
-- RL is shadow telemetry only
-- bundle checksums are enforced through `models/MODEL_MANIFEST.json`
-- production outcomes are confirmed with live telemetry
 
 ## Running Locally
 
@@ -163,5 +157,5 @@ helm upgrade --install spotvortex charts/spotvortex --namespace spotvortex --cre
 - TFT is the shipped market model
 - RL is shadow-only
 - `10` minutes is the active cadence
+- Karpenter and ASG-backed Cluster Autoscaler are both supported runtime paths
 - manifest-verified bundle loading is required
-- savings examples should be expressed against a clear baseline rate

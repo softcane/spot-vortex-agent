@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -213,10 +214,7 @@ func (m *ASGManager) waitForNewNode(ctx context.Context, pool PoolInfo, directio
 					continue
 				}
 
-				capType := labels[LabelKarpenterCapacity]
-				if capType == "" {
-					capType = labels["node.kubernetes.io/lifecycle"]
-				}
+				capType := CapacityTypeFromLabels(labels)
 				if capType != expectedCapType {
 					continue
 				}
@@ -251,16 +249,37 @@ func (m *ASGManager) PostDrainCleanup(ctx context.Context, nodeName string, pool
 		m.logger.Debug("no ASG client, skipping post-drain cleanup", "node", nodeName)
 		return nil
 	}
+	if m.k8sClient == nil {
+		m.logger.Debug("no k8s client, skipping post-drain cleanup", "node", nodeName)
+		return nil
+	}
 
-	// In a real implementation, we'd look up the EC2 instance ID from the node's
-	// providerID (e.g., "aws:///us-east-1a/i-1234567890abcdef0") and call
-	// TerminateInstance on the source ASG. For now, log the intent.
-	m.logger.Info("post-drain cleanup: would terminate instance",
+	node, err := m.k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to fetch drained node %q for cleanup: %w", nodeName, err)
+	}
+
+	instanceID := instanceIDFromProviderID(node.Spec.ProviderID)
+	if instanceID == "" {
+		return fmt.Errorf("node %q providerID %q does not contain an instance id", nodeName, node.Spec.ProviderID)
+	}
+
+	sourceASGID, err := m.sourceASGForNode(ctx, node, pool, instanceID)
+	if err != nil {
+		return err
+	}
+
+	if err := m.asgClient.TerminateInstance(ctx, sourceASGID, instanceID, true); err != nil {
+		return fmt.Errorf("failed to terminate instance %q from ASG %q: %w", instanceID, sourceASGID, err)
+	}
+
+	m.logger.Info("post-drain cleanup complete",
 		"node", nodeName,
+		"instance_id", instanceID,
 		"pool", pool.Name,
+		"asg", sourceASGID,
 		"manager", m.managerType,
 	)
-
 	return nil
 }
 
@@ -275,3 +294,52 @@ func (m *ASGManager) IsAvailable(ctx context.Context) bool {
 
 // Compile-time interface check.
 var _ CapacityManager = (*ASGManager)(nil)
+
+func (m *ASGManager) sourceASGForNode(ctx context.Context, node *corev1.Node, pool PoolInfo, instanceID string) (string, error) {
+	if instanceID != "" {
+		asgID, err := m.asgClient.GetInstanceASG(ctx, instanceID)
+		if err == nil && asgID != "" {
+			return asgID, nil
+		}
+		m.logger.Debug("failed to resolve ASG directly from instance id; falling back to twin discovery",
+			"node", node.Name,
+			"instance_id", instanceID,
+			"error", err,
+		)
+	}
+
+	if pool.Name == "" {
+		return "", fmt.Errorf("pool name required for ASG cleanup fallback on node %q", node.Name)
+	}
+
+	spotASG, odASG, err := m.asgClient.DiscoverTwinASGs(ctx, pool.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to discover twin ASGs for cleanup on pool %q: %w", pool.Name, err)
+	}
+
+	switch CapacityTypeFromLabels(node.Labels) {
+	case "spot":
+		return spotASG.ASGID, nil
+	case "on-demand":
+		return odASG.ASGID, nil
+	default:
+		return "", fmt.Errorf("node %q missing recognized capacity type for cleanup", node.Name)
+	}
+}
+
+func instanceIDFromProviderID(providerID string) string {
+	trimmed := strings.TrimSpace(providerID)
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.Split(trimmed, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+		return part
+	}
+	return ""
+}

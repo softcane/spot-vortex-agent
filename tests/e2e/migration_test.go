@@ -12,6 +12,7 @@ import (
 	"github.com/softcane/spot-vortex-agent/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func TestV2MigrationScenarios(t *testing.T) {
@@ -52,6 +53,10 @@ func TestV2MigrationScenarios(t *testing.T) {
 
 	// 4. Scenario A: Market Crash (Should trigger Emergency Exit)
 	t.Run("MarketCrash_EmergencyExit", func(t *testing.T) {
+		if !hasKarpenterNodePoolAPI(ctx, client) {
+			t.Skip("Karpenter NodePool API not available in this e2e cluster")
+		}
+
 		// High risk state
 		state := inference.NodeState{
 			SpotPrice:          0.80, // High price
@@ -133,4 +138,12 @@ func TestV2MigrationScenarios(t *testing.T) {
 			t.Log("Model correctly identified recovery opportunity")
 		}
 	})
+}
+
+func hasKarpenterNodePoolAPI(ctx context.Context, client *kubernetes.Clientset) bool {
+	if client == nil {
+		return false
+	}
+	_, err := client.Discovery().ServerResourcesForGroupVersion("karpenter.sh/v1")
+	return err == nil
 }

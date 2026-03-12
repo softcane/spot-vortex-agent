@@ -2182,7 +2182,7 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 		}
 	}
 	capacityType := ""
-	capacityType = labels["karpenter.sh/capacity-type"]
+	capacityType = capacity.CapacityTypeFromLabels(labels)
 	isSpot := capacityType == "spot"
 
 	c.logger.Info("executing node action",
@@ -2271,6 +2271,17 @@ func (c *Controller) executeAction(ctx context.Context, node NodeAssessment) err
 			"pods_evicted", result.PodsEvicted,
 			"duration", result.Duration,
 		)
+
+		if c.capacityRouter != nil && !result.DryRun {
+			cleanupPool := capacity.PoolInfo{
+				Name:         workloadPool,
+				Zone:         zone,
+				InstanceType: instanceType,
+			}
+			if err := c.capacityRouter.PostDrainCleanupForNode(ctx, nodeObj, cleanupPool); err != nil {
+				return fmt.Errorf("post-drain cleanup failed for node %s: %w", node.NodeID, err)
+			}
+		}
 
 		// Update Migration Timestamp
 		// Reconstruct pool ID from node labels... wait, we don't have them handy here easily.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,11 +34,11 @@ type GuardrailResult struct {
 
 // GuardrailChecker implements production guardrails per phase.md.
 type GuardrailChecker struct {
-	k8s                       kubernetes.Interface
-	logger                    *slog.Logger
-	clusterFractionLimit      float64 // Default: 0.20 (20%)
-	confidenceThreshold       float64 // Default: 0.50
-	highUtilizationThreshold  float64 // Default: 0.85 (85%)
+	k8s                      kubernetes.Interface
+	logger                   *slog.Logger
+	clusterFractionLimit     float64 // Default: 0.20 (20%)
+	confidenceThreshold      float64 // Default: 0.50
+	highUtilizationThreshold float64 // Default: 0.85 (85%)
 }
 
 // NewGuardrailChecker creates a new guardrail checker.
@@ -110,14 +111,17 @@ func (g *GuardrailChecker) Check(ctx context.Context, node *corev1.Node, action 
 // checkClusterFraction implements GUARDRAIL 1: Human Override Check.
 // Blocks actions affecting >20% of cluster.
 func (g *GuardrailChecker) checkClusterFraction(ctx context.Context, node *corev1.Node) (*GuardrailResult, error) {
-	nodes, err := g.k8s.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-		LabelSelector: "karpenter.sh/capacity-type=spot",
-	})
+	nodes, err := g.k8s.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	clusterSize := len(nodes.Items)
+	clusterSize := 0
+	for i := range nodes.Items {
+		if capacity.IsSpotNode(&nodes.Items[i]) {
+			clusterSize++
+		}
+	}
 	if clusterSize == 0 {
 		return &GuardrailResult{
 			Approved:      true,

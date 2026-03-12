@@ -5,6 +5,10 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestFakeASGClient_TwinDiscovery(t *testing.T) {
@@ -211,6 +215,118 @@ func TestASGManager_PostDrainCleanup(t *testing.T) {
 	err := mgr.PostDrainCleanup(ctx, "test-node", PoolInfo{Name: "test-pool"})
 	if err != nil {
 		t.Errorf("PostDrainCleanup: %v", err)
+	}
+}
+
+func TestASGManager_PostDrainCleanup_TerminatesSourceASG(t *testing.T) {
+	client := NewFakeASGClient()
+	client.AddTwinPair("test-pool", 3, 1)
+
+	k8sClient := k8sfake.NewSimpleClientset(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			Labels: map[string]string{
+				"spotvortex.io/pool":          "test-pool",
+				LabelSpotVortexCapacity:       "spot",
+				"topology.kubernetes.io/zone": "us-east-1a",
+			},
+		},
+		Spec: corev1.NodeSpec{
+			ProviderID: "aws:///us-east-1a/i-1234567890abcdef0",
+		},
+	})
+
+	mgr := NewASGManager(ASGManagerConfig{
+		ASGClient: client,
+		K8sClient: k8sClient,
+		Logger:    slog.Default(),
+	})
+
+	err := mgr.PostDrainCleanup(context.Background(), "test-node", PoolInfo{Name: "test-pool"})
+	if err != nil {
+		t.Fatalf("PostDrainCleanup: %v", err)
+	}
+
+	if len(client.TerminateCalls) != 1 {
+		t.Fatalf("terminate calls=%d, want 1", len(client.TerminateCalls))
+	}
+	call := client.TerminateCalls[0]
+	if call.ASGID != "test-pool-spot-asg" {
+		t.Fatalf("cleanup ASG=%q, want %q", call.ASGID, "test-pool-spot-asg")
+	}
+	if call.InstanceID != "i-1234567890abcdef0" {
+		t.Fatalf("cleanup instance=%q, want %q", call.InstanceID, "i-1234567890abcdef0")
+	}
+	if !call.Decrement {
+		t.Fatal("expected cleanup to decrement desired capacity")
+	}
+}
+
+func TestInstanceIDFromProviderID(t *testing.T) {
+	tests := []struct {
+		name       string
+		providerID string
+		want       string
+	}{
+		{name: "aws triple slash", providerID: "aws:///us-east-1a/i-123", want: "i-123"},
+		{name: "aws double slash", providerID: "aws://us-east-1a/i-456", want: "i-456"},
+		{name: "bare id", providerID: "i-789", want: "i-789"},
+		{name: "empty", providerID: "", want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := instanceIDFromProviderID(tc.providerID); got != tc.want {
+				t.Fatalf("instanceIDFromProviderID(%q) = %q, want %q", tc.providerID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestASGManager_WaitForNewNode_UsesNormalizedCapacityLabels(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "existing-node",
+				Labels: map[string]string{
+					"spotvortex.io/pool": "api",
+				},
+			},
+		},
+	)
+	mgr := NewASGManager(ASGManagerConfig{
+		K8sClient:        k8sClient,
+		Logger:           slog.Default(),
+		NodeReadyTimeout: 500 * time.Millisecond,
+		PollInterval:     10 * time.Millisecond,
+	})
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		_, _ = k8sClient.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "replacement-node",
+				Labels: map[string]string{
+					"spotvortex.io/pool":    "api",
+					LabelEKSCapacityType:    "ON_DEMAND",
+					LabelSpotVortexCapacity: "on-demand",
+				},
+			},
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{{
+					Type:   corev1.NodeReady,
+					Status: corev1.ConditionTrue,
+				}},
+			},
+		}, metav1.CreateOptions{})
+	}()
+
+	nodeName, err := mgr.waitForNewNode(context.Background(), PoolInfo{Name: "api"}, SwapToOnDemand)
+	if err != nil {
+		t.Fatalf("waitForNewNode: %v", err)
+	}
+	if nodeName != "replacement-node" {
+		t.Fatalf("replacement node = %q, want %q", nodeName, "replacement-node")
 	}
 }
 

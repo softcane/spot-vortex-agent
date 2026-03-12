@@ -196,6 +196,64 @@ func TestFilterExecutableNodes(t *testing.T) {
 	}
 }
 
+func TestFilterExecutableNodes_UsesNormalizedCapacityLabels(t *testing.T) {
+	k8s := k8sfake.NewSimpleClientset()
+	c := &Controller{
+		k8s:    k8s,
+		logger: slog.Default(),
+	}
+
+	nodes := []*corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ca-spot",
+				Labels: map[string]string{
+					"spotvortex.io/managed":       "true",
+					"spotvortex.io/manager":       "cluster-autoscaler",
+					"spotvortex.io/capacity-type": "spot",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "mng-od",
+				Labels: map[string]string{
+					"spotvortex.io/managed":          "true",
+					"eks.amazonaws.com/nodegroup":    "my-ng",
+					"eks.amazonaws.com/capacityType": "ON_DEMAND",
+				},
+			},
+		},
+	}
+	for _, node := range nodes {
+		if _, err := k8s.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create node %s: %v", node.Name, err)
+		}
+	}
+
+	filtered := c.filterExecutableNodes(context.Background(), []NodeAssessment{
+		{NodeID: "ca-spot", Action: inference.ActionDecrease10},
+		{NodeID: "ca-spot", Action: inference.ActionIncrease10},
+		{NodeID: "mng-od", Action: inference.ActionDecrease10},
+		{NodeID: "mng-od", Action: inference.ActionIncrease10},
+	})
+
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 actionable nodes, got %d", len(filtered))
+	}
+
+	seen := make(map[string]inference.Action)
+	for _, node := range filtered {
+		seen[node.NodeID] = node.Action
+	}
+	if seen["ca-spot"] != inference.ActionDecrease10 {
+		t.Fatalf("expected CA spot node to keep decrease action, got %v", seen["ca-spot"])
+	}
+	if seen["mng-od"] != inference.ActionIncrease10 {
+		t.Fatalf("expected MNG on-demand node to keep increase action, got %v", seen["mng-od"])
+	}
+}
+
 func TestGetPDBForPod(t *testing.T) {
 	k8s := k8sfake.NewSimpleClientset()
 	gc := NewGuardrailChecker(k8s, slog.Default(), 0.1)

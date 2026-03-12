@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
 	"github.com/softcane/spot-vortex-agent/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -111,7 +112,7 @@ func (c *Collector) Collect(ctx context.Context) (*LocalMetrics, error) {
 			poolKeys = append(poolKeys, extendedPoolID)
 		}
 		nodeToPools[node.Name] = poolKeys
-		nodeIsSpot[node.Name] = node.Labels["karpenter.sh/capacity-type"] == "spot"
+		nodeIsSpot[node.Name] = capacity.IsSpotNode(&node)
 
 		zone := node.Labels["topology.kubernetes.io/zone"]
 		if zone == "" {

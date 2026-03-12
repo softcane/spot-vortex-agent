@@ -9,6 +9,7 @@ import (
 
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
+	"github.com/softcane/spot-vortex-agent/internal/capacity"
 	"github.com/softcane/spot-vortex-agent/internal/cloudapi"
 	"github.com/softcane/spot-vortex-agent/internal/collector"
 	"github.com/softcane/spot-vortex-agent/internal/config"
@@ -22,6 +23,21 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
+
+type cleanupTrackingManager struct {
+	mgrType      capacity.ManagerType
+	cleanupCalls int
+}
+
+func (m *cleanupTrackingManager) Type() capacity.ManagerType { return m.mgrType }
+func (m *cleanupTrackingManager) PrepareSwap(ctx context.Context, pool capacity.PoolInfo, dir capacity.SwapDirection) (*capacity.SwapResult, error) {
+	return &capacity.SwapResult{Ready: true}, nil
+}
+func (m *cleanupTrackingManager) PostDrainCleanup(ctx context.Context, nodeName string, pool capacity.PoolInfo) error {
+	m.cleanupCalls++
+	return nil
+}
+func (m *cleanupTrackingManager) IsAvailable(ctx context.Context) bool { return true }
 
 // MockCloudProvider implements cloudapi.CloudProvider
 
@@ -492,6 +508,94 @@ func TestController_ExecuteAction(t *testing.T) {
 	err = ctrl.executeAction(context.Background(), NodeAssessment{NodeID: "node-managed", Action: inference.ActionDecrease10})
 	if err != nil {
 		t.Errorf("unexpected error for valid drain action (no drainer): %v", err)
+	}
+}
+
+func TestController_ExecuteAction_PostDrainCleanupRunsForASGNodes(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset()
+	logger := slog.Default()
+
+	for i := 0; i < 5; i++ {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("ca-node-%d", i),
+				Labels: map[string]string{
+					"spotvortex.io/managed":            "true",
+					"spotvortex.io/manager":            "cluster-autoscaler",
+					"spotvortex.io/pool":               "ca-pool",
+					"spotvortex.io/capacity-type":      "spot",
+					"topology.kubernetes.io/zone":      "us-east-1a",
+					"node.kubernetes.io/instance-type": "m5.large",
+				},
+			},
+		}
+		if _, err := k8sClient.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create node %s: %v", node.Name, err)
+		}
+	}
+
+	manager := &cleanupTrackingManager{mgrType: capacity.ManagerClusterAutoscaler}
+	ctrl := &Controller{
+		k8s:              k8sClient,
+		logger:           logger,
+		cloud:            &MockCloudProvider{DryRun: false},
+		drain:            NewDrainer(k8sClient, logger, DrainConfig{Timeout: time.Second, IgnoreDaemonSets: true}),
+		capacityRouter:   capacity.NewRouter(logger, manager),
+		lastMigration:    make(map[string]time.Time),
+		targetSpotRatio:  map[string]float64{"m5.large:us-east-1a": 1.0},
+		currentSpotRatio: map[string]float64{"m5.large:us-east-1a": 1.0},
+	}
+
+	err := ctrl.executeAction(context.Background(), NodeAssessment{NodeID: "ca-node-0", Action: inference.ActionDecrease10, Confidence: 1.0})
+	if err != nil {
+		t.Fatalf("executeAction: %v", err)
+	}
+	if manager.cleanupCalls != 1 {
+		t.Fatalf("cleanup calls=%d, want 1", manager.cleanupCalls)
+	}
+}
+
+func TestController_ExecuteAction_PostDrainCleanupSkippedInDryRun(t *testing.T) {
+	k8sClient := k8sfake.NewSimpleClientset()
+	logger := slog.Default()
+
+	for i := 0; i < 5; i++ {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("ca-dry-node-%d", i),
+				Labels: map[string]string{
+					"spotvortex.io/managed":            "true",
+					"spotvortex.io/manager":            "cluster-autoscaler",
+					"spotvortex.io/pool":               "ca-pool",
+					"spotvortex.io/capacity-type":      "spot",
+					"topology.kubernetes.io/zone":      "us-east-1a",
+					"node.kubernetes.io/instance-type": "m5.large",
+				},
+			},
+		}
+		if _, err := k8sClient.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create node %s: %v", node.Name, err)
+		}
+	}
+
+	manager := &cleanupTrackingManager{mgrType: capacity.ManagerClusterAutoscaler}
+	ctrl := &Controller{
+		k8s:              k8sClient,
+		logger:           logger,
+		cloud:            &MockCloudProvider{DryRun: true},
+		drain:            NewDrainer(k8sClient, logger, DrainConfig{DryRun: true, Timeout: time.Second, IgnoreDaemonSets: true}),
+		capacityRouter:   capacity.NewRouter(logger, manager),
+		lastMigration:    make(map[string]time.Time),
+		targetSpotRatio:  map[string]float64{"m5.large:us-east-1a": 1.0},
+		currentSpotRatio: map[string]float64{"m5.large:us-east-1a": 1.0},
+	}
+
+	err := ctrl.executeAction(context.Background(), NodeAssessment{NodeID: "ca-dry-node-0", Action: inference.ActionDecrease10, Confidence: 1.0})
+	if err != nil {
+		t.Fatalf("executeAction: %v", err)
+	}
+	if manager.cleanupCalls != 0 {
+		t.Fatalf("cleanup calls=%d, want 0 in dry-run", manager.cleanupCalls)
 	}
 }
 
