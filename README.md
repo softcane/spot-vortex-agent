@@ -5,11 +5,11 @@
 
 SpotVortex Agent is the in-cluster controller for safe Spot adoption.
 
-It helps SRE and FinOps teams increase Spot usage at the node-pool level without handing workload data to an external service. The agent uses the shipped TFT risk model, live pool safety signals, and a deterministic control policy to decide when to grow, hold, freeze, or reduce Spot exposure.
+It helps SRE and FinOps teams move more Kubernetes capacity onto Spot without losing control of service risk. SpotVortex watches market risk and pool health, then adjusts Spot exposure at the node-pool level in a predictable way.
 
 ![Example monthly savings for m5.2xlarge](docs/assets/deterministic_monthly_uplift_example.svg)
 
-The chart above is a worked benchmark example using the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
+The chart above is a benchmark example based on the current shipped runtime posture: `10` minute control cadence, deterministic active policy, transition-aware TFT, and `max_spot_ratio=1.0`.
 
 ## What You Deploy Today
 
@@ -22,22 +22,23 @@ The chart above is a worked benchmark example using the current shipped runtime 
 - Bundle contract: `models/MODEL_MANIFEST.json`
 - Cloud scope: AWS, `60` supported instance families
 
+The current AWS coverage is focused on common production pools: compute (`c5`, `c6`, `c7`), general purpose (`m5`, `m6`, `m7`), memory optimized (`r5`, `r6`, `r7`), and burstable (`t2`, `t3`, `t4g`), including Graviton and flex variants where available. The exact enforced scope lives in `models/MODEL_MANIFEST.json`.
+
 The shipped runtime config lives in [config/runtime.json](config/runtime.json).
 
 ## How It Works
 
-1. Loads the local ONNX bundle from `models/`.
-2. Uses TFT as the market risk signal.
-3. Builds a pool-safety view from live cluster state.
-4. Chooses a deterministic response for each node pool.
-5. Applies that response with steering, tainting, draining, and replacement controls.
-6. Keeps RL in shadow for comparison only.
+1. Watches Spot market risk for the instance families in scope.
+2. Measures whether each node pool can safely absorb node loss.
+3. Decides whether a pool should grow Spot, hold, freeze, or move back toward On-Demand.
+4. Applies that decision with node-pool steering and controlled drain behavior.
+5. Records RL recommendations in shadow mode for comparison only.
 
 The control unit is the node pool, not the individual pod.
 
 ## Reference Economics: One `m5.2xlarge` Node Over One Month
 
-This section converts the latest offline benchmark month for the `m5.2xlarge` slice into simple unit economics.
+This section turns the latest offline benchmark month for the `m5.2xlarge` slice into simple unit economics.
 
 In that benchmark month, the shipped deterministic policy:
 
@@ -53,7 +54,7 @@ monthly_system_cost = 730 * (spot_residency * spot_rate + (1 - spot_residency) *
 monthly_savings = 730 * spot_residency * (baseline_rate - spot_rate)
 ```
 
-This example is useful because it is easy to audit:
+This example is useful because it is easy to explain and audit:
 
 - one node type
 - one clear Spot residency number
@@ -66,7 +67,7 @@ This example is useful because it is easy to audit:
 | 1-Year Reserved | `$0.242/hr` | `$0.142/hr` | `$176.66` | `$118.95` | `$57.71` | `$5,770.55` |
 | 3-Year Reserved | `$0.166/hr` | `$0.142/hr` | `$121.18` | `$107.33` | `$13.85` | `$1,384.93` |
 
-These are gross compute-rate savings. Realized finance impact depends on your marginal baseline, commitment utilization, and whether the spend you move to Spot is actually displaced.
+These are gross compute-rate savings. Realized FinOps impact depends on your marginal baseline, commitment utilization, and whether the spend you move to Spot is actually displaced.
 
 
 ### Assumptions
@@ -91,50 +92,52 @@ Typical baselines:
 - Reserved or Savings Plan effective marginal rate
 - internal chargeback rate
 
-## How The Runtime Thinks About Risk
+## How SpotVortex Judges Risk
 
-The runtime thinks in terms of node-pool blast radius and recovery safety. It carries a pool-safety vector for each node pool, including:
+SpotVortex does not treat every node pool the same. It asks a simple operational question: if this pool loses Spot capacity, how likely is that to create service pain or slow recovery?
 
-- `critical_service_spot_concentration`: share of critical-service pods in the pool that are currently running on Spot.
-- `min_pdb_slack_if_one_node_lost`: worst remaining PDB slack if the pool loses its riskiest single node.
-- `min_pdb_slack_if_two_nodes_lost`: worst remaining PDB slack if the pool loses its two riskiest node placements.
-- `stateful_pod_fraction`: share of workload pods in the pool that are owned by StatefulSets.
-- `restart_p95_seconds`: pool-level P95 restart or recovery proxy in seconds.
-- `recovery_budget_violation_risk`: normalized risk that a Spot loss would push the pool outside its recovery budget.
-- `spare_od_headroom_nodes`: estimated immediate On-Demand headroom still available in the pool.
-- `zone_diversification_score`: score for how well the pool is spread across zones.
-- `evictable_pod_fraction`: share of workload pods that are currently safe to evict voluntarily.
-- `safe_max_spot_ratio`: the maximum Spot ratio the deterministic policy considers safe for the pool right now.
+To answer that, it keeps a pool-safety view for every node pool:
 
-Today these fields are computed locally from pods, PDBs, node labels, and pool utilization:
+- `critical_service_spot_concentration`: how much of your critical workload is currently sitting on Spot.
+- `min_pdb_slack_if_one_node_lost`: how much PDB room is left if the pool loses one node.
+- `min_pdb_slack_if_two_nodes_lost`: how much PDB room is left if the pool loses two nodes in the worst placement.
+- `stateful_pod_fraction`: how much of the pool is made up of harder-to-move stateful workloads.
+- `restart_p95_seconds`: how long workloads in the pool usually take to come back healthy.
+- `recovery_budget_violation_risk`: an overall risk score for whether a Spot loss is likely to break recovery expectations.
+- `spare_od_headroom_nodes`: how much immediate On-Demand room is still available.
+- `zone_diversification_score`: how well the pool is spread across availability zones.
+- `evictable_pod_fraction`: how much of the pool can be safely moved right now.
+- `safe_max_spot_ratio`: the Spot share the controller considers safe for that pool at this moment.
 
-- `critical_service_spot_concentration` = `critical pods on Spot / total critical pods`; a pod is treated as critical if `spotvortex.io/critical=true` or its priority score is `>= 0.75`.
-- `min_pdb_slack_if_one_node_lost` = minimum across matching PDBs of `disruptionsAllowed - max pods from that PDB on any one node`.
-- `min_pdb_slack_if_two_nodes_lost` = minimum across matching PDBs of `disruptionsAllowed - (pods on densest node + pods on second-densest node)`.
-- `stateful_pod_fraction` = `StatefulSet-owned workload pods / workload pods`; workload pods exclude DaemonSets.
-- `restart_p95_seconds` = CPU-weighted P95 of startup-to-ready latency, with `spotvortex.io/startup-time` as an override when present.
-- `recovery_budget_violation_risk` = max heuristic signal from low or negative PDB slack, high critical-pod Spot concentration, high stateful fraction, slow restart P95, low On-Demand headroom, weak zone spread, and low evictable fraction.
-- `spare_od_headroom_nodes` = `on_demand_nodes * (1 - pool_utilization)` using the runtime’s current pool utilization feed.
-- `zone_diversification_score` = `0.0` for one zone, `0.5` for two zones, `1.0` for three or more zones.
-- `evictable_pod_fraction` = `currently voluntary-evictable workload pods / workload pods`; a pod counts as evictable when no matching PDB blocks it, or when `disruptionsAllowed > 0`.
-- `safe_max_spot_ratio` = the minimum cap produced by deterministic thresholds over the safety vector above, tightening as blast radius or recovery risk increases.
+These signals are computed locally from pods, PDBs, node labels, startup latency, and current utilization:
 
-This keeps the decision node-level while making the policy more sensitive to real service impact.
+- `critical_service_spot_concentration` = critical pods on Spot divided by total critical pods.
+- `min_pdb_slack_if_one_node_lost` = the worst remaining PDB slack after removing the densest single-node placement.
+- `min_pdb_slack_if_two_nodes_lost` = the worst remaining PDB slack after removing the two densest node placements.
+- `stateful_pod_fraction` = StatefulSet workload pods divided by total workload pods.
+- `restart_p95_seconds` = weighted P95 startup-to-ready time, with `spotvortex.io/startup-time` available as an override.
+- `recovery_budget_violation_risk` = a heuristic roll-up of PDB tightness, critical concentration, stateful mix, restart time, On-Demand headroom, zone spread, and evictability.
+- `spare_od_headroom_nodes` = estimated On-Demand nodes still available from current On-Demand capacity and pool utilization.
+- `zone_diversification_score` = `0.0` in one zone, `0.5` in two zones, `1.0` in three or more zones.
+- `evictable_pod_fraction` = workload pods that can currently be evicted voluntarily divided by total workload pods.
+- `safe_max_spot_ratio` = the tightest Spot cap implied by the current safety signals.
+
+This keeps decisions at the node-pool level while making the controller much more sensitive to real service impact.
 
 If some pool-safety signals are unavailable, the runtime falls back to safe deterministic defaults instead of silently promoting RL behavior.
 
 ## How To Roll It Out
 
-Treat SpotVortex as an operational control system, not just a model bundle.
+Treat SpotVortex as an operating control for capacity risk, not just a model bundle.
 
 Recommended rollout path:
 
 1. Install the agent in dry-run or shadow mode first.
-2. Confirm the bundle loads and the controller runs cleanly.
-3. Check the agent’s recommendations against your current pool behavior.
-4. Start with a limited set of node pools.
-5. Watch live interruption, drain, restart, and recovery telemetry.
-6. Expand only after the cluster behavior is stable.
+2. Confirm the controller starts cleanly and sees your cluster the way you expect.
+3. Compare its recommendations against the way your pools behave today.
+4. Start with a small set of non-critical pools.
+5. Watch interruption, restart, drain, recovery, and cost telemetry closely.
+6. Expand only when the results are stable and the savings are real.
 
 The runtime facts that matter for rollout are:
 
@@ -143,18 +146,6 @@ The runtime facts that matter for rollout are:
 - RL is shadow telemetry only
 - bundle checksums are enforced through `models/MODEL_MANIFEST.json`
 - production outcomes are confirmed with live telemetry
-
-## What To Validate In Your Cluster
-
-Before calling a rollout successful, verify:
-
-- the agent starts and loads the bundle cleanly
-- the deterministic controller is making pool-level decisions
-- no unexpected drain or restart behavior appears
-- interruption and recovery behavior stays acceptable
-- savings improve without creating service impact
-
-The `m5.2xlarge` example is for planning and sizing. Live telemetry is what confirms production results.
 
 ## Running Locally
 
